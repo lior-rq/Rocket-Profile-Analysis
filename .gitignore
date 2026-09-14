@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+output/
+jobs/
+.DS_Store
+worker/console.log
+output-archive/
+worker/heartbeat.json
+worker/vm_result.*
+worker/vm_task.log
+*.app/
+*.egg-info/
+build/

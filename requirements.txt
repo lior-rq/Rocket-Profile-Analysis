@@ -1,0 +1,13 @@
+# Mac side (pipeline). Create the env with:  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+jpype1>=1.5
+numpy>=1.26
+pandas>=2.2
+matplotlib>=3.8
+pyyaml>=6
+tabulate>=0.9
+pytest>=8
+# openMotor .ric designs as motor inputs (rpa/ric.py) need openMotor's motorlib dependencies:
+scipy>=1.11
+scikit-fmm>=2023.4
+scikit-image>=0.22
+# Windows VM side (worker/rasaero_worker.py):  python -m pip install pywinauto pillow

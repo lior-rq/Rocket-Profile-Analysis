@@ -1,0 +1,29 @@
+{
+  "row": {
+    "booster": "08-30285O5579",
+    "profile": null,
+    "sep_delay_s": 1.0,
+    "ign_delay_s": 3.0,
+    "sustainer_engine": "14511N1637-01  (LiorsRocketOptimizer)",
+    "booster_engine": "30285O5579-08  (LiorsRocketOptimizer)",
+    "sustainer_wt_lb": 53.815,
+    "sustainer_cg_in": 75.448,
+    "sustainer_nozzle_in": 2.36,
+    "combined_wt_lb": 123.519,
+    "combined_cg_in": 115.777,
+    "booster_nozzle_in": 3.56,
+    "max_alt_ft": 61930.89,
+    "max_vel_fps": 2383.593,
+    "t_apogee_s": 61.33685,
+    "round": 0,
+    "tag": "08-30285O5579|char|sep=1.00|ign=3.00"
+  },
+  "site": {
+    "altitude_ft": 2782.0,
+    "pressure_inhg": 29.9,
+    "rod_angle_deg": 3.0,
+    "rod_length_ft": 22.0,
+    "temperature_f": 110.0,
+    "wind_speed_mph": 0.0
+  }
+}

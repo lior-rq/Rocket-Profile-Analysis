@@ -1,0 +1,118 @@
+# Rocket Profile Analysis - configuration (merged over rpa/config.py DEFAULTS)
+
+paths:
+  ork: "input/OpenRocket (.ork)/ORK_1.3.ork"
+  cdx1: "input/RASAero (.CDX1)/RAS_v1.3.CDX1"
+  boosters: ["input/Motor Files/optimized-boosters-v1.eng"]   # folders and/or .eng files (one motor or many per file); every motor found is a candidate
+  sustainers: ["input/Motor Files/optimized-sustainers-v1"]   # same for the sustainer candidates (the highest impulse is used)
+  boosters_dir: "input/Motor Files/optimized-boosters-v1.eng" # legacy single-source form, used only when the list above is empty
+  sustainers_dir: "input/Motor Files/optimized-sustainers-v1"
+  output_dir: "output"
+  jobs_dir: "jobs"                # shared with the VM (Z:\jobs)
+  aero_dir: "input/aero"          # RASAero 'Aero Plots' exports: <stack|sustainer>_alt<ft>[_noz<in>].csv
+  reference_dir: "input/rasaero_reference"   # RASAero 'View Data' exports used by `rpa validate`
+  openrocket_jar: "/Applications/OpenRocket.app/Contents/Resources/app/jar/OpenRocket-24.12.jar"
+  jvm: "/Applications/OpenRocket.app/Contents/Resources/jre.bundle/Contents/Home/lib/server/libjvm.dylib"
+
+target:
+  apogee_ft: 45000
+  tolerance_ft: 100
+
+profiles:
+  subsonic_max_mach: 0.9          # profile 1: stack never exceeds this during boost
+  supersonic_min_mach: 1.2        # profile 2: separation must happen at or above this
+  mach_margin: 0.05               # design margin applied to both limits
+  separation_delay_min_s: 0.0     # booster separation window, seconds after booster burnout (0 = at burnout)
+  separation_delay_max_s: 1.0
+  separation_step_s: 0.5          # separation delays tried inside the window (min, min+step, ..., max)
+  ignition_delay_min_s: 1.0       # sustainer ignition window, seconds after separation (RASAero SustainerIgnitionDelay)
+  ignition_delay_max_s: 15.0      #   hard rule: ignition is never before burnout (t_ign = burnout + separation + ignition delay), so both floors are 0
+  coarse_step_s: 1.0              # ignition delays tried inside the window before the bracket refinement
+  max_refine_rounds: 4
+  min_ignition_velocity_fps: 0    # verification only; 0 disables
+  include_decel_subsonic: false   # optional 3rd variant: coast attached below Mach 0.9, then separate
+
+characterization:               # long-coast run used to measure the attached stack
+  separation_delay_s: 15.0        # after booster burnout
+  ignition_delay_s: 15.0          # after separation (RASAero convention)
+
+launch_site:                    # null = keep the value in the CDX1 file
+  altitude_ft: null
+  pressure_inhg: null
+  rod_angle_deg: null
+  rod_length_ft: null
+  temperature_f: null
+  wind_speed_mph: null
+
+surface_finish: "Rough Camouflage Paint"
+
+rasaero:
+  engine_name_format: "{designation}  ({manufacturer})"   # how RASAero names motors in <Booster1Engine>
+  rows_per_batch: 100
+  export_time_base_s: 0.01
+  altitude_reference: auto        # auto (detect from the first export) | agl | msl
+  sustainer_nozzle_in: null       # null = parse "exit x.xxx in" from the .eng comment header
+  booster_nozzle_in: null
+
+mass_model:
+  method: openrocket              # openrocket | manual
+  hardware_mass_lb: 180           # dry (no-propellant) mass of the complete two-stage vehicle, lb.
+                                  # The .ork only supplies the split between stages, the CGs and the motor positions;
+                                  # both stages' dry masses are scaled so the vehicle weighs this much empty and the
+                                  # .eng propellant masses are added on top. null = keep the .ork masses as they are.
+  manual:                         # used only when method: manual
+    sustainer_wt_lb: null
+    sustainer_cg_in: null
+    combined_wt_lb_ref: null      # combined weight with the reference booster loaded
+    combined_cg_in_ref: null
+    ref_booster_prop_kg: null
+    booster_prop_cg_in: null      # axial station (from nose tip) of the booster propellant CG
+
+backend: python                   # python (integrator on RASAero aero tables, runs on the Mac)
+                                  # | rasaero (RASAero GUI via the VM worker) | openrocket (preview)
+
+python_sim:
+  dt_s: 0.01
+  max_time_s: 400
+  pressure_is_sea_level: true     # launch-site Pressure is the barometric (sea-level reduced) reading
+  density_model: auto             # auto = measured from the RASAero reference exports when present (density_calibration.csv),
+                                  #   else rasaero (~ (T/T_pad)^density_exponent); also: calibrated | rasaero | hydrostatic
+  density_exponent: 5.05
+  ref_diameter_in: null           # null = largest body diameter found in the CDX1
+  workers: auto                   # CPU processes for the search batches (auto = cores - 1, 1 = serial)
+
+aero_tables:                      # `rpa aero`: Aero Plots exports (once per vehicle revision)
+  altitudes_ft: [20000, 40000]    # Mach-Alt altitude per table (CD is nearly altitude-independent here)
+  stack_nozzles_in: auto          # auto = min / middle / max booster nozzle exit diameter
+  sustainer_nozzles_in: auto      # auto = min / max sustainer nozzle exit diameter
+  plot_range: "Mach 5"
+
+validation:                       # `rpa validate` pass criteria vs RASAero reference exports
+  apogee_tol_pct: 1.0
+  mach_tol: 0.01
+  cd_tol_pct: 2.0
+  weight_tol_lb: 0.5
+  mach_at_burnout_tol: 0.01
+
+worker:
+  mode: auto                      # auto = VM worker polls jobs/ ; manual = you drive RASAero by hand
+  transport: auto                 # how jobs reach the VM: agent = UTM guest agent (no shared folder; auto when utmctl is found) | share = Z: WebDAV
+  poll_s: 3
+  timeout_s: 3600
+  max_retries: 2
+
+ranking:
+  metric: vel_at_ign_fps          # column of designs.csv to rank feasible designs by
+  descending: true
+
+ric:                            # openMotor .ric designs as motor inputs (each simulated once with openMotor, cached in output/motors/ric_cache)
+  openmotor: auto                 # folder with openMotor's motorlib; auto = installed copy, $OPENMOTOR_PATH, or a sibling project's vendor/openMotor
+  timestep_s: 0.002               # openMotor timestep for the thrust curves
+
+vm:                             # GUI "Start VM worker" button: boots the UTM VM and starts the worker inside it
+  name: "Windows"                 # UTM virtual machine name (utmctl list)
+  utmctl: auto                    # path to utmctl; auto = /Applications/UTM.app/Contents/MacOS/utmctl
+  share_drive: "Z:"               # this repo as seen from inside the VM
+  task_name: RPAWorker            # Windows task that runs the worker on the desktop (no spaces)
+  python: auto                    # python.exe in the VM; auto = the logged-on user's python.org install
+  boot_timeout_s: 240

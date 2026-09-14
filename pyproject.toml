@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rocket-profile-analysis"
+version = "1.0"
+description = "Two-stage flight profile optimizer (OpenRocket + RASAero II SOP automation) with a local GUI"
+requires-python = ">=3.11"
+dependencies = ["jpype1>=1.5", "numpy>=1.26", "pandas>=2.2", "matplotlib>=3.8", "pyyaml>=6", "tabulate>=0.9"]
+
+[project.optional-dependencies]
+ric = ["scipy>=1.11", "scikit-fmm>=2023.4", "scikit-image>=0.22"]  # openMotor's motorlib needs these to simulate .ric designs
+
+[project.scripts]
+rpa = "rpa.cli:main"
+
+[tool.setuptools]
+packages = ["rpa", "rpa.gui"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"rpa.gui" = ["static/*"]
+
+[tool.ruff]
+line-length = 240
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+ignore = ["E501", "E402"]

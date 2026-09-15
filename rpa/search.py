@@ -10,8 +10,8 @@ this rocket (a longer coast lets the sustainer burn in thinner air until
 gravity losses win), so the coarse ignition grid is scanned for every bracket
 where the apogee crosses the target and each bracket is refined with regula
 falsi. Every round is one batch through the backend, across all candidates at
-once. The best candidate per (booster, profile) is kept: solved beats
-unsolved, then the smallest miss, then the shortest total coast (highest
+once. The best candidate per (booster, sustainer, profile) is kept: solved
+beats unsolved, then the smallest miss, then the shortest total coast (highest
 velocity at ignition).
 """
 
@@ -33,14 +33,20 @@ class Candidate:
     brackets: list[tuple[float, float]] = field(default_factory=list)
     done: bool = False
     status: str = "pending"
+    sustainer: str = ""
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.booster, self.sustainer, self.profile)
 
     def sorted_samples(self) -> list[SimRow]:
         return [self.samples[k] for k in sorted(self.samples)]
 
 
 def make_row(booster_label: str, profile: str | None, sep: float, ign: float, ms, mass: MassRow, cfg, rnd: int = 0) -> SimRow:
+    """One RASAero row; the sustainer is the one the mass row was built for."""
     b = ms.booster(booster_label)
-    s = ms.sustainer
+    s = ms.sustainer_by_label(mass.sustainer)
     fmt = cfg["rasaero"]["engine_name_format"]
     s_noz = cfg["rasaero"]["sustainer_nozzle_in"] or s.nozzle_exit_in
     b_noz = cfg["rasaero"]["booster_nozzle_in"] or b.nozzle_exit_in
@@ -60,15 +66,16 @@ def make_row(booster_label: str, profile: str | None, sep: float, ign: float, ms
         combined_cg_in=mass.combined_cg_in,
         booster_nozzle_in=float(b_noz),
         round=rnd,
+        sustainer=s.label,
     )
 
 
 class ApogeeSearch:
-    def __init__(self, cfg, backend: SimBackend, ms, mass_by_booster: dict[str, MassRow], eligibilities: list[ProfileEligibility], log=print):
+    def __init__(self, cfg, backend: SimBackend, ms, mass_by_pair: dict[tuple[str, str], MassRow], eligibilities: list[ProfileEligibility], log=print):
         self.cfg = cfg
         self.backend = backend
         self.ms = ms
-        self.mass = mass_by_booster
+        self.mass = mass_by_pair  # (booster, sustainer) -> MassRow
         self.log = log
         p = cfg["profiles"]
         self.target = float(cfg["target"]["apogee_ft"])
@@ -78,7 +85,7 @@ class ApogeeSearch:
         self.step = float(p["coarse_step_s"])
         self.sep_step = float(p["separation_step_s"])
         self.max_rounds = int(p["max_refine_rounds"])
-        self.cands = [Candidate(e.booster, e.profile, sep) for e in eligibilities if e.eligible for sep in self.separation_grid(e.sep_min_s, e.sep_max_s)]
+        self.cands = [Candidate(e.booster, e.profile, sep, sustainer=e.sustainer) for e in eligibilities if e.eligible for sep in self.separation_grid(e.sep_min_s, e.sep_max_s)]
         self.all_rows: list[SimRow] = []
 
     def separation_grid(self, lo: float, hi: float, max_points: int = 9) -> list[float]:
@@ -111,22 +118,25 @@ class ApogeeSearch:
 
     def run(self) -> list[Design]:
         if not self.cands:
-            self.log("  no eligible (booster, profile) candidates - nothing to search")
+            self.log("  no eligible (booster, sustainer, profile) candidates - nothing to search")
             return []
-        pairs = {(c.booster, c.profile) for c in self.cands}
-        self.log(f"  {len(self.cands)} candidates = {len(pairs)} (booster, profile) x separation delays {sorted({c.sep_delay_s for c in self.cands})} s; ignition delays {self.gap:g}-{self.ign_max:g} s")
+        keys = {c.key for c in self.cands}
+        n_sus = len({c.sustainer for c in self.cands})
+        self.log(f"  {len(self.cands)} candidates = {len(keys)} (booster, sustainer, profile) [{n_sus} sustainer(s)] x separation delays {sorted({c.sep_delay_s for c in self.cands})} s; ignition delays {self.gap:g}-{self.ign_max:g} s")
         self._search(self.cands, tag="search")
-        # keep one design per (booster, profile): solved beats anything, then the smallest miss, then the shortest coast
-        best: dict[tuple[str, str], Candidate] = {}
+        # one design per key: solved > smallest miss > shortest coast
+        best: dict[tuple[str, str, str], Candidate] = {}
         for c in self.cands:
-            k = (c.booster, c.profile)
+            k = c.key
             if k not in best or self._rank(c) < self._rank(best[k]):
                 best[k] = c
+        b_order = [c.booster for c in self.cands]
+        s_order = [c.sustainer for c in self.cands]
         designs = []
-        for k in sorted(best, key=lambda k: [c.booster for c in self.cands].index(k[0])):
+        for k in sorted(best, key=lambda k: (b_order.index(k[0]), s_order.index(k[1]), k[2])):
             chosen = best[k]
             d = self._design(chosen)
-            siblings = [c for c in self.cands if (c.booster, c.profile) == k]
+            siblings = [c for c in self.cands if c.key == k]
             d.n_sims = sum(len([r for r in c.samples.values() if r.max_alt_ft is not None]) for c in siblings)
             d.extra["samples"] = [(r.ign_delay_s, r.max_alt_ft, c.sep_delay_s) for c in siblings for r in c.sorted_samples() if r.max_alt_ft is not None]
             d.extra["separation_delays_tried"] = sorted({c.sep_delay_s for c in siblings})
@@ -147,7 +157,7 @@ class ApogeeSearch:
         rows = []
         for c in cands:
             for d in self._coarse_delays(c):
-                r = make_row(c.booster, c.profile, c.sep_delay_s, d, self.ms, self.mass[c.booster], self.cfg, rnd=0)
+                r = make_row(c.booster, c.profile, c.sep_delay_s, d, self.ms, self.mass[(c.booster, c.sustainer)], self.cfg, rnd=0)
                 c.samples[r.ign_delay_s] = r
                 rows.append(r)
         self.log(f"  round 0: {len(rows)} rows over {len(cands)} candidates (ignition delay grid)")
@@ -165,7 +175,7 @@ class ApogeeSearch:
                     d = self._propose(c, lo, hi)
                     if d is None or d in c.samples:
                         continue
-                    r = make_row(c.booster, c.profile, c.sep_delay_s, d, self.ms, self.mass[c.booster], self.cfg, rnd=rnd)
+                    r = make_row(c.booster, c.profile, c.sep_delay_s, d, self.ms, self.mass[(c.booster, c.sustainer)], self.cfg, rnd=rnd)
                     c.samples[r.ign_delay_s] = r
                     rows.append(r)
             if not rows:
@@ -210,7 +220,7 @@ class ApogeeSearch:
     def _design(self, c: Candidate) -> Design:
         s = [r for r in c.sorted_samples() if r.max_alt_ft is not None]
         if not s:
-            return Design(c.booster, c.profile, c.sep_delay_s, float("nan"), float("nan"), "unsolved", n_sims=len(c.samples))
+            return Design(c.booster, c.profile, c.sep_delay_s, float("nan"), float("nan"), "unsolved", n_sims=len(c.samples), sustainer=c.sustainer)
         best = min(s, key=lambda r: (abs(r.max_alt_ft - self.target), r.ign_delay_s))
         by_delay = c.sorted_samples()
         d = Design(
@@ -223,6 +233,7 @@ class ApogeeSearch:
             n_sims=len(s),
             apogee_min_delay_ft=by_delay[0].max_alt_ft,
             apogee_max_delay_ft=by_delay[-1].max_alt_ft,
+            sustainer=c.sustainer,
         )
         d.hint = self._hint(c, s)
         d.extra["samples"] = [(r.ign_delay_s, r.max_alt_ft, c.sep_delay_s) for r in s]

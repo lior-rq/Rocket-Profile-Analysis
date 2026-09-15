@@ -27,6 +27,7 @@ import pandas as pd
 from . import history as H
 from .aero import STACK, SUSTAINER
 from .backends import PythonBackend
+from .eng import Motor
 from .models import SimRow
 
 
@@ -43,23 +44,42 @@ class RefCase:
     @classmethod
     def load(cls, csv: Path) -> RefCase:
         meta = json.loads(csv.with_suffix(".json").read_text())
+        row = {"sustainer": "", **meta["row"]}  # older cases: the .sustainer.eng copy identifies the motor
         b = csv.with_name(csv.stem + ".booster.eng")
         su = csv.with_name(csv.stem + ".sustainer.eng")
-        return cls(csv.stem, csv, SimRow.from_dict(meta["row"]), meta.get("site", {}), H.read_rasaero_export(csv), b if b.exists() else None, su if su.exists() else None)
+        return cls(csv.stem, csv, SimRow.from_dict(row), meta.get("site", {}), H.read_rasaero_export(csv), b if b.exists() else None, su if su.exists() else None)
 
     def vehicle(self, be: PythonBackend):
         """The Vehicle for this case: the case's own .eng copies when present,
         else the motors of the current set (by label)."""
-        from .eng import parse_eng
         from .flightsim import Vehicle
 
         r = self.row
-        booster = parse_eng(self.booster_eng)[0] if self.booster_eng else be.ms.booster(r.booster)
-        sustainer = parse_eng(self.sustainer_eng)[0] if self.sustainer_eng else be.ms.sustainer
+        booster = _motor_from_copy(self.booster_eng, r.booster, r.booster_engine) if self.booster_eng else be.ms.booster(r.booster)
+        if self.sustainer_eng:
+            sustainer = _motor_from_copy(self.sustainer_eng, None, r.sustainer_engine)
+        elif r.sustainer:
+            sustainer = be.ms.sustainer_by_label(r.sustainer)
+        else:
+            raise ValueError(f"{self.name}: no .sustainer.eng copy and no sustainer label - re-export the reference flights")
         self.note = ""
         if self.sustainer_eng is None and sustainer.designation not in r.sustainer_engine:
             self.note = f"sustainer {r.sustainer_engine!r} of the case is not the current one ({sustainer.designation}); no .sustainer.eng copy - re-export the reference flights"
         return Vehicle(booster, sustainer, r.combined_wt_lb, r.sustainer_wt_lb, be.ref_diameter_in, r.booster_nozzle_in, r.sustainer_nozzle_in)
+
+
+def _motor_from_copy(path: Path, label: str | None, engine_name: str):
+    """The motor a case's .eng copy holds. New copies hold one block; a copy
+    of a whole multi-motor file is resolved by label / RASAero engine name."""
+    from .eng import parse_eng
+
+    motors = parse_eng(path)
+    if len(motors) == 1:
+        return motors[0]
+    hits = [m for m in motors if m.label == label or engine_name.startswith(m.designation + " ")]
+    if len(hits) != 1:
+        raise ValueError(f"{path.name}: {len(motors)} motors and {len(hits)} match {label or engine_name!r}")
+    return hits[0]
 
 
 def load_cases(directory: Path) -> list[RefCase]:
@@ -70,14 +90,16 @@ def load_cases(directory: Path) -> list[RefCase]:
     return cases
 
 
-def save_case(directory: Path, name: str, export_csv: Path, row: SimRow, site: dict, booster_eng: Path | None = None, sustainer_eng: Path | None = None) -> Path:
+def save_case(directory: Path, name: str, export_csv: Path, row: SimRow, site: dict, booster: Motor | None = None, sustainer: Motor | None = None) -> Path:
+    """Store the export, the row and the two motors' own RASP blocks (never
+    the whole source file: it may hold every booster of the set)."""
     directory.mkdir(parents=True, exist_ok=True)
     dst = directory / f"{name}.csv"
     dst.write_bytes(Path(export_csv).read_bytes())
     dst.with_suffix(".json").write_text(json.dumps({"row": row.to_dict(), "site": site}, indent=2))
-    for src, suffix in ((booster_eng, ".booster.eng"), (sustainer_eng, ".sustainer.eng")):
-        if src is not None:
-            dst.with_name(f"{name}{suffix}").write_bytes(Path(src).read_bytes())
+    for m, suffix in ((booster, ".booster.eng"), (sustainer, ".sustainer.eng")):
+        if m is not None:
+            dst.with_name(f"{name}{suffix}").write_text(m.raw_text())
     return dst
 
 
@@ -101,7 +123,7 @@ def compare(case: RefCase, be: PythonBackend, alt_offset_ft: float = 0.0) -> dic
     alt = np.clip(ref["altitude_ft"].to_numpy(), 0.0, None)
     vel = ref["velocity_fps"].to_numpy()
     t = ref["time_s"].to_numpy()
-    flying = vel > 150.0  # skip the rail / near-apogee samples, where Mach is a ratio of two small numbers
+    flying = vel > 150.0  # skip rail/near-apogee samples, where Mach is two small numbers' ratio
 
     # -- atmosphere: Mach from RASAero's own velocity and altitude
     a = np.array([sim.atm_lookup(h)[1] for h in alt])  # the integrator's own tabulated speed of sound
@@ -157,7 +179,7 @@ def compare(case: RefCase, be: PythonBackend, alt_offset_ft: float = 0.0) -> dic
     rec["mach_burnout_err"] = rec["mach_burnout_ours"] - rec["mach_burnout_ref"]
     rec["max_mach_ref"], rec["max_mach_ours"] = float(ref["mach"].max()), summ["max_mach"]
     rec["max_vel_ref_fps"], rec["max_vel_ours_fps"] = float(ref["velocity_fps"].max()), summ["max_vel_fps"]
-    # Mach-vs-time agreement while the stack is attached (what the profile rules look at)
+    # Mach-vs-time agreement while attached (what the profile rules look at)
     tt = t[(t <= t_sep_ref) & flying]
     if len(tt):
         rec["stack_mach_max_abs_err"] = float(np.max(np.abs(np.interp(tt, ours["time_s"], ours["mach"]) - np.interp(tt, t, ref["mach"].to_numpy()))))
@@ -212,7 +234,7 @@ def run_validation(cases: list[RefCase], be: PythonBackend, tol: dict, out_dir: 
         try:
             rec = compare(c, be, alt_offset_ft)
         except KeyError as e:
-            # the motors of this case are not in the current set and the case has no .eng copies
+            # case's motors are not in the current set, and it has no .eng copies
             why = f"motor not available: {e} (the motor set changed; re-export the reference flights)"
             recs.append({"case": c.name, "booster": c.row.booster, "sep_delay_s": c.row.sep_delay_s, "ign_delay_s": c.row.ign_delay_s, "apogee_ref_ft": float(c.history["altitude_ft"].max()), "pass": False, "fail_reasons": why})
             log(f"  {c.name}: SKIPPED - {why}")

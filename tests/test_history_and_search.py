@@ -94,22 +94,27 @@ class FakeMotor:
 
 class FakeMotorSet:
     sustainer = FakeMotor("S")
+    sustainer_candidates = [FakeMotor("S"), FakeMotor("S2")]
 
     def booster(self, label):
         return FakeMotor(label)
+
+    def sustainer_by_label(self, label):
+        return next(m for m in self.sustainer_candidates if m.label == label)
 
 
 def test_search_brackets_and_refines():
     cfg = load_config(root=".")
     cfg["target"] = {"apogee_ft": 45000.0, "tolerance_ft": 10.0}
-    mass = {"B": MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0)}
-    elig = [ProfileEligibility("B", "supersonic", True, 1.0, 1.0), ProfileEligibility("B", "subsonic", False, 1.0, 1.0)]
+    mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S")}
+    elig = [ProfileEligibility("B", "supersonic", True, 1.0, 1.0, sustainer="S"), ProfileEligibility("B", "subsonic", False, 1.0, 1.0, sustainer="S")]
     be = FakeBackend()
     designs = ApogeeSearch(cfg, be, FakeMotorSet(), mass, elig, log=lambda *_: None).run()
     assert len(designs) == 1
     d = designs[0]
     assert d.status == "solved" and abs(d.apogee_ft - 45000) <= 10 and d.sep_delay_s == 1.0
-    # the curve crosses 45000 at 12 - sqrt(1000/60) = 7.92 s (and again at 16.08, outside range)
+    assert d.sustainer == "S" and d.key == "B|S|supersonic"
+    # curve crosses 45000 at 12 - sqrt(1000/60) = 7.92s (and 16.08, outside range)
     assert abs(d.ign_delay_s - 7.92) < 0.1
     assert be.calls <= 1 + cfg["profiles"]["max_refine_rounds"]
 
@@ -118,15 +123,15 @@ def test_search_separation_grid_prefers_shortest_coast():
     cfg = load_config(root=".")
     cfg["target"] = {"apogee_ft": 45000.0, "tolerance_ft": 10.0}
     cfg["profiles"].update({"separation_step_s": 0.5, "ignition_delay_min_s": 1.0, "ignition_delay_max_s": 15.0})
-    mass = {"B": MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0)}
-    elig = [ProfileEligibility("B", "supersonic", True, 0.0, 1.0)]  # window 0..1 s -> grid 0, 0.5, 1.0
+    mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S")}
+    elig = [ProfileEligibility("B", "supersonic", True, 0.0, 1.0, sustainer="S")]  # window 0..1 s -> grid 0, 0.5, 1.0
     srch = ApogeeSearch(cfg, FakeBackend(), FakeMotorSet(), mass, elig, log=lambda *_: None)
     assert sorted({c.sep_delay_s for c in srch.cands}) == [0.0, 0.5, 1.0]
     designs = srch.run()
     assert len(designs) == 1
     d = designs[0]
     assert d.status == "solved"
-    # the fake apogee does not depend on separation, so every grid point solves at ign 7.92 -> the shortest coast (sep 0) wins
+    # fake apogee ignores separation: all solve at ign 7.92, shortest coast wins
     assert d.sep_delay_s == 0.0 and abs(d.ign_delay_s - 7.92) < 0.1
     assert d.extra["separation_delays_tried"] == [0.0, 0.5, 1.0] and all(len(x) == 3 for x in d.extra["samples"])
 
@@ -134,7 +139,32 @@ def test_search_separation_grid_prefers_shortest_coast():
 def test_search_reports_overpowered_hint():
     cfg = load_config(root=".")
     cfg["target"] = {"apogee_ft": 35000.0, "tolerance_ft": 10.0}
-    mass = {"B": MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0)}
-    elig = [ProfileEligibility("B", "supersonic", True, 1.0, 1.0)]
+    mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S")}
+    elig = [ProfileEligibility("B", "supersonic", True, 1.0, 1.0, sustainer="S")]
     designs = ApogeeSearch(cfg, FakeBackend(), FakeMotorSet(), mass, elig, log=lambda *_: None).run()
     assert designs[0].status == "overpowered" and "shortest allowed coast" in designs[0].hint and "separation_delay_min_s" in designs[0].hint
+
+
+def test_search_keeps_sustainers_apart():
+    """Two sustainers with the same booster are two designs, each flown with its own motor."""
+    cfg = load_config(root=".")
+    cfg["target"] = {"apogee_ft": 45000.0, "tolerance_ft": 10.0}
+    mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S"), ("B", "S2"): MassRow("B", 55.0, 75.0, 125.0, 115.0, 15.0, sustainer="S2")}
+    elig = [ProfileEligibility("B", "supersonic", True, 1.0, 1.0, sustainer="S"), ProfileEligibility("B", "supersonic", True, 1.0, 1.0, sustainer="S2")]
+    srch = ApogeeSearch(cfg, FakeBackend(), FakeMotorSet(), mass, elig, log=lambda *_: None)
+    designs = srch.run()
+    assert [(d.booster, d.sustainer) for d in designs] == [("B", "S"), ("B", "S2")]
+    rows = {r.sustainer: r for r in srch.all_rows}
+    assert rows["S2"].sustainer_engine == "S2  (M)" and rows["S2"].sustainer_wt_lb == 55.0
+    assert rows["S"].sustainer_engine == "S  (M)" and rows["S"].sustainer_wt_lb == 54.0
+
+
+def test_pick_spanning():
+    from rpa.motors import pick_spanning
+
+    items = list(range(60))
+    assert pick_spanning(items, 5) == [0, 15, 30, 44, 59]
+    assert pick_spanning(items, 2) == [0, 59]
+    assert pick_spanning(items, 1) == [30]
+    assert pick_spanning([7, 8], 5) == [7, 8]  # duplicates collapse
+    assert pick_spanning([], 3) == []

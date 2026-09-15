@@ -9,8 +9,12 @@ and writes done.json when finished.
     python rasaero_worker.py --inspect Z:\output\rasaero_ui.txt   (dump the UI tree for debugging)
 
 Job types (see rpa/jobs.py):
-    rerun_save : open input -> Flight Simulation -> Rerun All -> save as result.CDX1
-    export     : same, then 'View Data' on row 1 -> File > Export -> export.csv
+    rerun_save   : open input -> Flight Simulation -> Rerun All -> save as result.CDX1
+    export       : same, then 'View Data' on row 1 -> File > Export -> export.csv
+    export_batch : same, then 'View Data' + export on every row (spec.export_csvs) -
+                   N reference flights for the cost of one job's overhead
+    aero_export  : Aero Plots CD-vs-Mach export; spec.mach_alt_items lets one job
+                   cover several Mach-Alt altitudes of the same nozzle
 
 GUI details (control names, key sequences, waits) live in worker_config.json
 next to this file so they can be tuned without touching the code.
@@ -39,7 +43,7 @@ except ImportError:  # pragma: no cover - documented in worker/README.md
     print("pywinauto is required inside the VM:  python -m pip install pywinauto")
     raise
 
-WORKER_VERSION = 36  # bump when editing; the job log shows which version ran
+WORKER_VERSION = 42  # bump when editing; the job log shows which version ran
 RELOAD_EXIT_CODE = 3  # 'restart me' for run_worker.py
 
 HERE = Path(__file__).resolve().parent
@@ -71,6 +75,7 @@ DEFAULT_CONFIG = {
     "time_base_downs": {"0.01": 0, "0.1": 1, "0.5": 2, "1.0": 3},
     "save_prompt_yes_titles": ["Yes", "&Yes", "OK"],
     "save_prompt_no_titles": ["No", "&No"],
+    "screenshots": "errors",  # all | errors | off - "all" costs ~1s per shot (ImageGrab)
 }
 
 
@@ -85,6 +90,38 @@ def load_worker_config(path: Path | None) -> dict:
             else:
                 cfg[k] = v
     return cfg
+
+
+def poll_until(pred, timeout: float, interval: float = 0.15) -> bool:
+    """Poll `pred` instead of a blind sleep: returns as soon as it's true,
+    so the common (fast) case doesn't pay the worst-case wait."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if pred():
+            return True
+        time.sleep(interval)
+    return bool(pred())
+
+
+class Profile:
+    """Per-job step timings, appended to the job log so a change to the
+    waits above can be measured on the real VM instead of guessed at."""
+
+    def __init__(self):
+        self.t0 = time.time()
+        self.marks: list[tuple[str, float]] = []
+
+    def mark(self, name: str):
+        self.marks.append((name, time.time()))
+
+    def summary(self) -> str:
+        prev = self.t0
+        parts = []
+        for name, t in self.marks:
+            parts.append(f"{name} {t - prev:.1f}s")
+            prev = t
+        parts.append(f"total {prev - self.t0:.1f}s")
+        return ", ".join(parts)
 
 
 def escape_keys(text: str) -> str:
@@ -157,7 +194,7 @@ class RASAero:
         # pin the main form by handle: a title/visibility lookup fails while
         # one of RASAero's modal forms (Aero Plots, Mach-Alt) is open
         self.main = self.app.window(handle=self.main.wrapper_object().handle)
-        time.sleep(self.cfg["long_delay_s"])
+        time.sleep(self.cfg["short_delay_s"])
         self.main.set_focus()
         self.log("RASAero started")
 
@@ -172,8 +209,14 @@ class RASAero:
         self.main = None
 
     # ---- debugging helpers ------------------------------------------------
-    def screenshot(self, tag: str):
+    def screenshot(self, tag: str, force: bool = False):
+        """Skipped for happy-path/diagnostic tags when worker_config.json
+        'screenshots' is 'errors' (default) or 'off'; error call sites pass
+        force=True so a failure is always photographed."""
         if not self.debug_dir:
+            return
+        mode = self.cfg.get("screenshots", "all")
+        if mode == "off" or (not force and mode == "errors"):
             return
         try:
             self._shots += 1
@@ -285,6 +328,77 @@ class RASAero:
         ctypes.windll.user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(r))
         return r.left, r.top, r.right, r.bottom
 
+    # ---- focus guard --------------------------------------------------------
+    # A user alt-tabbing into the VM (or clicking around in it) steals the OS
+    # foreground window and/or keyboard focus out from under us mid-job: a
+    # send_keys() then types into whatever they switched to, and a
+    # click_input()/mouse.click() lands wherever that other window now is.
+    # click(), keys() and raw_click() below are drop-in replacements for
+    # ctrl.click_input(), send_keys() and mouse.click() that reclaim the
+    # foreground first - cheap when nothing has interfered, since it is just
+    # one GetForegroundWindow() call.
+    _last_interference_log = 0.0
+
+    @staticmethod
+    def _foreground_pid() -> tuple[int | None, int | None]:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = ctypes.c_void_p  # a HWND is pointer-sized; the ctypes default (c_int) truncates it on 64-bit
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None, None
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+        return int(hwnd), pid.value
+
+    def _hwnd_of(self, target) -> int | None:
+        if isinstance(target, int):
+            return target
+        target = target or self.main
+        try:
+            return target.wrapper_object().handle
+        except Exception:
+            return getattr(target, "handle", None)
+
+    def ensure_foreground(self, target=None) -> bool:
+        """Make sure a RASAero window owns the OS foreground before an
+        interactive step; force `target` (default self.main) forward if some
+        other process currently does. Returns True if it had to intervene."""
+        fg_hwnd, fg_pid = self._foreground_pid()
+        if fg_pid is not None and self.app is not None and fg_pid == self.app.process:
+            return False  # one of our own windows is already up front
+        now = time.time()
+        if now - self._last_interference_log > 5:
+            self._last_interference_log = now
+            self.log("foreground is not RASAero (VM used during a job?) - reclaiming focus")
+        want = self._hwnd_of(target) or self._hwnd_of(self.main)
+        if want:
+            self.win32_focus(want)
+        return True
+
+    def click(self, ctrl, coords=None):
+        """ctrl.click_input(), guarded (see ensure_foreground)."""
+        self.ensure_foreground(ctrl)
+        ctrl.click_input(coords=coords) if coords is not None else ctrl.click_input()
+
+    def keys(self, keys_str, target=None, **kwargs):
+        """send_keys(), guarded (see ensure_foreground): `target` names the
+        window the keys are meant for when it is not self.main (e.g. a
+        floating dialog), so the right one is reclaimed if focus was lost."""
+        self.ensure_foreground(target)
+        send_keys(keys_str, **kwargs)
+
+    def raw_click(self, hwnd: int, coords: tuple[int, int]):
+        """pywinauto.mouse.click() at absolute screen coordinates, guarded:
+        used for the Aero Plots form, whose UIA tree cannot be walked (see
+        heavy_handles), so there is no control to click_input() on."""
+        from pywinauto import mouse
+
+        self.ensure_foreground(hwnd)
+        mouse.click(coords=coords)
+
     def win32_exists(self, hwnd: int) -> bool:
         return any(h == hwnd for h, _, _ in self.enum_windows())
 
@@ -292,19 +406,18 @@ class RASAero:
         """Close one specific window by handle (WM_CLOSE), never Alt+F4 to
         whatever is in front - that has closed the worker's own console."""
         self.win32_close(hwnd)
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            if not self.win32_exists(hwnd):
-                self.heavy_handles.discard(hwnd)
-                return True
-            time.sleep(0.5)
+        if poll_until(lambda: not self.win32_exists(hwnd), timeout, 0.2):
+            self.heavy_handles.discard(hwnd)
+            return True
         self.log(f"window {hwnd:#x} did not close")
         return False
 
-    def wait_responsive(self, hwnd: int, timeout: float, settle: int = 3) -> bool:
+    def wait_responsive(self, hwnd: int, timeout: float, settle: int = 2) -> bool:
         """Block until the window's UI thread answers messages again (RASAero
         shows the Aero Plots form first and computes its table afterwards,
-        during which every UIA call times out). True if it became responsive."""
+        during which every UIA call times out). True if it became responsive.
+        Checks every 0.25s (not 1s): SendMessageTimeoutW is the correctness
+        check either way, so sampling faster only shortens the best case."""
         import ctypes
         from ctypes import wintypes
 
@@ -317,9 +430,9 @@ class RASAero:
             ok = user32.SendMessageTimeoutW(wintypes.HWND(hwnd), 0x0000, 0, 0, SMTO_ABORTIFHUNG, 1000, ctypes.byref(res))
             good = good + 1 if ok else 0
             if good >= settle:
-                self.log(f"window {hwnd:#x} responsive after {time.time() - t0:.0f}s")
+                self.log(f"window {hwnd:#x} responsive after {time.time() - t0:.1f}s")
                 return True
-            time.sleep(1.0)
+            time.sleep(0.25)
         self.log(f"window {hwnd:#x} still busy after {timeout:.0f}s")
         return False
 
@@ -338,7 +451,7 @@ class RASAero:
     def wait_idle(self, min_wait: float, max_wait: float):
         time.sleep(min_wait)
         try:
-            self.app.wait_cpu_usage_lower(threshold=self.cfg["cpu_idle_threshold"], timeout=max_wait, usage_interval=1.0)
+            self.app.wait_cpu_usage_lower(threshold=self.cfg["cpu_idle_threshold"], timeout=max_wait, usage_interval=0.4)
         except Exception as e:
             self.log(f"cpu-idle wait gave up: {e}")
 
@@ -370,13 +483,13 @@ class RASAero:
             w, btn = self.find_dialog_button(titles)
             if btn is not None:
                 self.log(f"dialog {w.window_text()!r}: clicking {btn.window_text()!r}")
-                btn.click_input()
+                self.click(btn)
                 time.sleep(self.cfg["short_delay_s"])
                 return True
-            time.sleep(0.3)
+            time.sleep(0.15)
         if fallback_keys:
             self.log(f"no dialog button {titles} found; sending {fallback_keys!r}")
-            send_keys(fallback_keys)
+            self.keys(fallback_keys)
             time.sleep(self.cfg["short_delay_s"])
         return False
 
@@ -419,33 +532,35 @@ class RASAero:
         """Open a menu path like 'File->Select Motor File' by clicking the items.
         RASAero's .NET MenuStrip does not expose the UIA Invoke pattern, so
         pywinauto's menu_select() cannot be used."""
-        window.set_focus()
+        self.ensure_foreground(window)
         time.sleep(self.cfg["short_delay_s"])
         parts = [p.strip() for p in path.split("->")]
         try:
             top = self.find_menu_item("^" + re.escape(parts[0]) + "$")
             if top is None:
                 raise RuntimeError(f"top-level menu {parts[0]!r} not found")
-            top.click_input()
+            self.click(top)
             time.sleep(self.cfg["short_delay_s"])
             for name in parts[1:]:
                 item = self.find_menu_item(re.escape(name), exclude=top)
                 if item is None:
                     self.screenshot("menu-missing")
                     self.dump_tree(self.debug_dir / "ui_tree_menu.txt") if self.debug_dir else None
-                    send_keys("{ESC}")
+                    self.keys("{ESC}", target=window)
                     raise RuntimeError(f"menu item {name!r} not found under {parts[0]!r}")
-                item.click_input()
+                self.click(item)
                 time.sleep(self.cfg["short_delay_s"])
             self.log(f"menu {path}")
         except Exception as e:
             if not fallback_keys:
                 raise
             self.log(f"menu {path!r} by clicking failed ({type(e).__name__}: {e}); using keys {fallback_keys!r}")
-            send_keys("{ESC}")
-            window.set_focus()
-            send_keys(fallback_keys, pause=self.cfg["short_delay_s"])
-        time.sleep(self.cfg["long_delay_s"])
+            self.keys("{ESC}", target=window)
+            self.ensure_foreground(window)
+            self.keys(fallback_keys, target=window, pause=self.cfg["short_delay_s"])
+        # caller-specific polling (a file dialog, a new window, ...) follows
+        # most menu() calls; this is just settle time for the click itself.
+        time.sleep(self.cfg["short_delay_s"])
 
     def file_dialog_open(self) -> bool:
         return any(c == "#32770" for _, _, c in self.enum_windows())
@@ -454,29 +569,26 @@ class RASAero:
         """Common file dialogs open with focus in the 'File name' box. The
         dialog can be slow to appear / to accept Enter (WebDAV listings), so
         wait for it, then retry the Enter / Open button until it is gone."""
-        t0 = time.time()
-        while not self.file_dialog_open() and time.time() - t0 < 20:
-            time.sleep(0.3)
+        poll_until(self.file_dialog_open, 20, 0.15)
         time.sleep(self.cfg["long_delay_s"])
-        send_keys("^a")
-        send_keys(escape_keys(path), with_spaces=True, pause=0.01)
-        send_keys("{ENTER}")
+        self.keys("^a")
+        self.keys(escape_keys(path), with_spaces=True, pause=0.01)
+        self.keys("{ENTER}")
         for attempt in range(6):
-            time.sleep(self.cfg["long_delay_s"])
-            if not self.file_dialog_open():
+            if poll_until(lambda: not self.file_dialog_open(), self.cfg["long_delay_s"], 0.15):
                 return
             # an overwrite confirmation ("already exists, replace?") -> Yes
             w, yes = self.find_dialog_button(["Yes", "&Yes"])
             if yes is not None:
                 self.log("confirming overwrite")
-                yes.click_input()
+                self.click(yes)
                 continue
             self.log(f"file dialog still open (attempt {attempt + 1}); retrying")
             w, btn = self.find_dialog_button(["Open", "&Open", "Save", "&Save"])
             if btn is not None:
-                btn.click_input()
+                self.click(btn)
             else:
-                send_keys("{ENTER}")
+                self.keys("{ENTER}")
         self.screenshot("file-dialog-stuck")
         raise RuntimeError(f"file dialog did not accept {path}")
 
@@ -489,8 +601,8 @@ class RASAero:
         w, btn = self.find_dialog_button(["OK"])
         if btn is not None:
             msg = self.dialog_text()
-            self.screenshot("motor-file-error")
-            btn.click_input()
+            self.screenshot("motor-file-error", force=True)
+            self.click(btn)
             raise RuntimeError(f"RASAero complained after Select Motor File: {msg}")
 
     def design_part_count(self) -> int:
@@ -504,22 +616,23 @@ class RASAero:
 
     def open_cdx1(self, path: str, attempts: int = 3):
         for attempt in range(attempts):
-            self.main.set_focus()
-            send_keys("^o")
+            self.ensure_foreground(self.main)
+            self.keys("^o")
             self.type_path_into_file_dialog(path)
             w, btn = self.find_dialog_button(["OK"])
             if btn is not None:
                 msg = self.dialog_text()
-                self.screenshot("open-error")
-                btn.click_input()
+                self.screenshot("open-error", force=True)
+                self.click(btn)
                 raise RuntimeError(f"RASAero complained after opening the file: {msg}")
-            time.sleep(self.cfg["long_delay_s"])
+            # -1 = UIA not answering yet, so wait for a real count
+            poll_until(lambda: self.design_part_count() > 0, self.cfg["long_delay_s"], 0.3)
             n = self.design_part_count()
-            if n != 0:
+            if n > 0:
                 self.log(f"opened {path} ({n} parts)")
                 return
             self.log(f"open attempt {attempt + 1}: design is empty after opening {path}; retrying")
-            self.screenshot(f"open-empty{attempt + 1}")
+            self.screenshot(f"open-empty{attempt + 1}", force=True)
             time.sleep(self.cfg["long_delay_s"] * 2)
         raise RuntimeError(f"could not open {path}: design stays empty")
 
@@ -528,21 +641,19 @@ class RASAero:
         opened (the new top-level RASAero window, whatever its title), or
         None. The main window is raised first: click_input() works in screen
         coordinates and lands on whatever is in front (the worker's own
-        console during the first bring-up)."""
+        console during the first bring-up, or the user's if they alt-tabbed
+        into the VM - see ensure_foreground)."""
         before = {h for h, _, _ in self.enum_windows()}
-        self.main.set_focus()
+        self.ensure_foreground(self.main)
         time.sleep(self.cfg["short_delay_s"])
         btn = self.main.child_window(title_re=title_re, control_type="Button")
         btn.wait("visible enabled", timeout=15)
         # click_input, not invoke(): the button shows a modal form, so a
         # synchronous UIA Invoke never returns and times out after ~2 min.
-        btn.click_input()
+        self.click(btn)
         # Aero Plots computes its whole table (to Mach 25) before the form
-        # responds; UIA calls during that time out (0x80131505), so wait for
-        # the process to go idle before touching the tree.
-        # The form pumps messages while it computes its table (so a
-        # responsiveness probe passes) but UIA calls still time out until the
-        # process goes idle - wait on CPU first.
+        # responds; UIA calls time out (0x80131505) until it goes idle, even
+        # though it pumps messages the whole time. Wait on CPU, not UIA.
         self.wait_idle(self.cfg["long_delay_s"], self.cfg["sim_max_wait_s"])
         t0 = time.time()
         while time.time() - t0 < timeout:
@@ -551,7 +662,7 @@ class RASAero:
             if titled:
                 self.log(f"button {title_re!r}: new windows " + ", ".join(f"{t!r}/{c}" for _, t, c in new))
                 self.wait_responsive(titled[0][0], self.cfg["sim_max_wait_s"])
-                time.sleep(self.cfg["long_delay_s"])
+                time.sleep(self.cfg["short_delay_s"])
                 if raw_handle:
                     return titled[0][0]
                 for _ in range(10):
@@ -570,11 +681,9 @@ class RASAero:
     def ap_click(self, hwnd: int, name: str, wait: bool = True):
         """Click a control of the Aero Plots form by its position in the
         form (worker_config.json: aero_plots_layout)."""
-        from pywinauto import mouse
-
         dx, dy = self.cfg["aero_plots_layout"][name]
         left, top, _, _ = self.win32_rect(hwnd)
-        mouse.click(coords=(left + dx, top + dy))
+        self.raw_click(hwnd, (left + dx, top + dy))
         time.sleep(self.cfg["short_delay_s"])
         if wait:
             time.sleep(self.cfg["long_delay_s"])
@@ -583,8 +692,6 @@ class RASAero:
 
     def ap_select_plot_range(self, hwnd: int, label: str):
         """Pick an entry of the 'Plot Data to' list (Mach 3/5/8/10/25)."""
-        from pywinauto import mouse
-
         items = self.cfg["aero_plots_plot_range_items"]
         if label not in items:
             raise ValueError(f"unknown plot range {label!r}; known: {list(items)}")
@@ -592,7 +699,7 @@ class RASAero:
         time.sleep(self.cfg["short_delay_s"])
         dx, dy = items[label]
         left, top, _, _ = self.win32_rect(hwnd)
-        mouse.click(coords=(left + dx, top + dy))
+        self.raw_click(hwnd, (left + dx, top + dy))
         time.sleep(self.cfg["long_delay_s"])
         self.wait_idle(0.0, self.cfg["sim_max_wait_s"])
         self.wait_responsive(hwnd, self.cfg["sim_max_wait_s"])
@@ -607,67 +714,135 @@ class RASAero:
         for attempt in range(attempts):
             if os.path.exists(csv_path):
                 os.remove(csv_path)
-            self.win32_focus(hwnd)
-            send_keys(self.cfg["keys"]["aero_export"], pause=self.cfg["short_delay_s"])
-            t0 = time.time()
+            self.ensure_foreground(hwnd)
+            self.keys(self.cfg["keys"]["aero_export"], target=hwnd, pause=self.cfg["short_delay_s"])
             dlg = None
-            while time.time() - t0 < 30:
+
+            def find_dlg():
+                nonlocal dlg
                 dlgs = [h for h, _, c in self.enum_windows() if c == "#32770"]
                 if dlgs:
                     dlg = dlgs[0]
-                    break
-                time.sleep(0.3)
+                return bool(dlgs)
+
+            poll_until(find_dlg, 30, 0.15)
             if dlg is None:
                 self.log("no save dialog appeared for the CSV export")
-                self.screenshot("aero-export-nodialog")
-                send_keys("{ESC}{ESC}")
+                self.screenshot("aero-export-nodialog", force=True)
+                self.keys("{ESC}{ESC}", target=hwnd)
                 continue
             self.wait_responsive(dlg, 60)
-            time.sleep(self.cfg["long_delay_s"] * 2)
-            send_keys("%n")  # focus the File name box
-            time.sleep(0.5)
-            send_keys("^a")
-            send_keys(escape_keys(csv_path), with_spaces=True, pause=0.02)
-            time.sleep(0.5)
-            send_keys("{ENTER}")
-            time.sleep(self.cfg["long_delay_s"])
+            time.sleep(self.cfg["short_delay_s"])  # local disk now; the old WebDAV-listing wait is gone
+            self.keys("%n", target=dlg)  # focus the File name box
+            time.sleep(0.3)
+            self.keys("^a", target=dlg)
+            self.keys(escape_keys(csv_path), target=dlg, with_spaces=True, pause=0.02)
+            time.sleep(0.3)
+            self.keys("{ENTER}", target=dlg)
+            time.sleep(self.cfg["short_delay_s"])
             if wait_for_file(csv_path, timeout=90):
                 self.log(f"aero plots exported {csv_path}")
                 return
-            self.screenshot(f"aero-export-missing{attempt + 1}")
+            self.screenshot(f"aero-export-missing{attempt + 1}", force=True)
             self.log(f"export attempt {attempt + 1}: no file; closing the dialog and retrying")
             for h in [h for h, _, c in self.enum_windows() if c == "#32770"]:
                 self.win32_close(h)
             time.sleep(self.cfg["long_delay_s"])
         raise RuntimeError(f"aero export did not produce {csv_path}")
 
-    def enter_mach_alt(self, points: list[list[float]]):
-        """Options -> Mach-Alt: add (Mach, altitude ft) points, then Done."""
-        self.menu(self.main, "Options->Mach-Alt", None)
-        time.sleep(self.cfg["long_delay_s"])
-        dlg = None
-        for w in self.all_windows():
-            if (w.window_text() or "").strip().lower() == "mach_alt":
-                dlg = w
+    def clear_mach_alt(self, dlg, limit: int = 10):
+        """Delete every point in the Mach-Alt list. The list belongs to the
+        RASAero session, not the document: it survives File->Open, and a
+        Mach number already in it makes Accept raise "Duplicate Mach no's.".
+        Stops when Delete greys out, removes nothing, or answers with a
+        message box (dismissed); `limit` bounds the blind clicks when UIA
+        hides the items."""
+        lists = dlg.descendants(control_type="List")
+        delete = [b for b in dlg.descendants(control_type="Button") if b.window_text() == "Delete"]
+        if not lists or not delete:
+            self.log("Mach-Alt: list box or Delete button not found; cannot clear old points")
+            return
+        lst, delete = lists[0], delete[0]
+
+        def count():
+            return len(lst.children(control_type="ListItem"))
+
+        n = 0
+        for _ in range(limit):
+            before = count()
+            if before:
+                self.click(lst.children(control_type="ListItem")[0])
+            else:
+                self.click(lst, coords=(10, 8))  # first row, in case UIA hides the items
+                self.keys("{HOME}")
+            time.sleep(0.2)
+            if not delete.is_enabled():
                 break
+            self.click(delete)
+            time.sleep(0.2)
+            w, ok = self.find_dialog_button(["OK"])  # e.g. "no item selected"
+            if ok is not None:
+                self.log(f"Mach-Alt: Delete answered {self.dialog_text()!r}; list taken as empty")
+                self.click(ok)
+                time.sleep(self.cfg["short_delay_s"])
+                break
+            # a session with a real item to delete (list not already empty)
+            # asks "Are you sure you want to delete this item?" (Yes/No)
+            w, yes = self.find_dialog_button(["Yes"])
+            if yes is not None:
+                self.click(yes)
+                time.sleep(self.cfg["short_delay_s"])
+            if before and count() >= before:
+                self.log("Mach-Alt: Delete removed nothing; stopping")
+                break
+            n += 1
+        if n:
+            self.log(f"Mach-Alt: removed {n} old point(s)")
+
+    def enter_mach_alt(self, points: list[list[float]]):
+        """Options -> Mach-Alt: clear the list, add (Mach, altitude ft) points, then Done."""
+        self.menu(self.main, "Options->Mach-Alt", None)
+
+        def find_mach_alt():
+            return next((w for w in self.all_windows() if (w.window_text() or "").strip().lower() == "mach_alt"), None)
+
+        dlg = None
+        t0 = time.time()
+        while time.time() - t0 < self.cfg["long_delay_s"] * 3:
+            dlg = find_mach_alt()
+            if dlg is not None:
+                break
+            time.sleep(0.15)
         if dlg is None:
             raise RuntimeError("Mach_Alt dialog did not open")
+        self.clear_mach_alt(dlg)
         edits = dlg.descendants(control_type="Edit")
         if len(edits) < 2:
             raise RuntimeError(f"Mach_Alt dialog: expected 2 edit boxes, found {len(edits)}")
         accept = [b for b in dlg.descendants(control_type="Button") if b.window_text() == "Accept"][0]
         for mach, alt in points:
             for box, val in ((edits[0], f"{mach:g}"), (edits[1], f"{alt:g}")):
-                box.click_input()
-                send_keys("^a{BACKSPACE}")
-                send_keys(val)
+                # set_edit_text: a direct WM_SETTEXT/ValuePattern write, not a
+                # click + select-all + type - so it cannot land in the wrong
+                # window if focus was stolen (see ensure_foreground above).
+                box.set_edit_text(val)
                 time.sleep(0.2)
-            accept.click_input()
+            self.click(accept)
             time.sleep(self.cfg["short_delay_s"])
+            w, ok = self.find_dialog_button(["OK"])  # "Duplicate Mach no's." box
+            if ok is not None:
+                msg = self.dialog_text()
+                self.screenshot("mach-alt-rejected", force=True)
+                self.click(ok)
+                time.sleep(self.cfg["short_delay_s"])
+                self.click_dialog_button(["Cancel"], timeout=3)
+                raise RuntimeError(f"Mach-Alt rejected ({mach:g}, {alt:g}): {msg}")
         self.screenshot("mach-alt-entered")
         done = [b for b in dlg.descendants(control_type="Button") if b.window_text() == "Done"][0]
-        done.click_input()
-        time.sleep(self.cfg["long_delay_s"])
+        self.click(done)
+        if not poll_until(lambda: find_mach_alt() is None, self.cfg["long_delay_s"], 0.15):
+            self.screenshot("mach-alt-stuck", force=True)
+            raise RuntimeError("Mach_Alt dialog did not close after Done (a stray dialog is likely blocking it)")
         self.log(f"Mach-Alt: entered {len(points)} point(s)")
 
     def open_flight_sim(self):
@@ -703,8 +878,6 @@ class RASAero:
         keyboard (End = last column, Space = press) and everything after that
         is Win32 only - the data window holds thousands of rows and any UIA
         call while it is open times out (0x80131505)."""
-        from pywinauto import mouse
-
         target = self.fs if self.fs is not None else self.main.wrapper_object()
         before = {h for h, _, _ in self.enum_windows()}
         rect = None
@@ -718,11 +891,11 @@ class RASAero:
         if rect is None:
             self.log(f"view data: row {row} not found in the grid")
             return None
-        mouse.click(coords=(rect.left + 10, (rect.top + rect.bottom) // 2))
+        self.raw_click(target, (rect.left + 10, (rect.top + rect.bottom) // 2))
         time.sleep(0.5)
-        send_keys("{END}")  # last column = the ViewData button cell
+        self.keys("{END}", target=target)  # last column = the ViewData button cell
         time.sleep(0.3)
-        send_keys("{SPACE}")
+        self.keys("{SPACE}", target=target)
         self.wait_idle(self.cfg["long_delay_s"], self.cfg["sim_max_wait_s"])
         t0 = time.time()
         while time.time() - t0 < 30:
@@ -735,75 +908,100 @@ class RASAero:
                 return hwnd
             time.sleep(0.5)
         self.log("view data window did not appear")
-        self.screenshot("view-data-missing")
+        self.screenshot("view-data-missing", force=True)
         return None
 
+    def _export_data_window(self, hwnd: int, csv_path: str, time_base_s: float, attempts: int = 3):
+        """File > Export > To CSV from an already-open View Data window
+        (keyboard only - see open_view_data). RASAero may ask for a time
+        base before the save dialog; the dialog is answered with the keys
+        in worker_config.json. Shared by export_row1 and export_rows."""
+        for attempt in range(attempts):
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+            self.ensure_foreground(hwnd)
+            self.keys(self.cfg["keys"]["export"], target=hwnd, pause=self.cfg["short_delay_s"])
+            # a time-base prompt (if any) shows up before the file dialog
+            t0 = time.time()
+            dlg = None
+            while time.time() - t0 < 30:
+                dlgs = [h for h, _, c in self.enum_windows() if c == "#32770"]
+                if dlgs:
+                    dlg = dlgs[0]
+                    break
+                others = [(h, t) for h, t, c in self.enum_windows() if h != hwnd and t.strip() and "time" in t.lower()]
+                if others:
+                    self.screenshot("time-base-dialog")
+                    downs = self.cfg["time_base_downs"].get(str(time_base_s), 0)
+                    if downs:
+                        self.keys("{DOWN %d}" % downs, target=others[0][0], pause=0.2)
+                    self.keys(self.cfg["keys"]["time_base_confirm"], target=others[0][0], pause=self.cfg["short_delay_s"])
+                    time.sleep(self.cfg["short_delay_s"])
+                time.sleep(0.2)
+            if dlg is None:
+                self.log("no save dialog appeared for the history export")
+                self.screenshot("export-nodialog", force=True)
+                self.keys("{ESC}{ESC}", target=hwnd)
+                continue
+            self.wait_responsive(dlg, 60)
+            time.sleep(self.cfg["short_delay_s"])  # local disk now; the old WebDAV-listing wait is gone
+            self.keys("%n", target=dlg)
+            time.sleep(0.3)
+            self.keys("^a", target=dlg)
+            self.keys(escape_keys(csv_path), target=dlg, with_spaces=True, pause=0.02)
+            time.sleep(0.3)
+            self.keys("{ENTER}", target=dlg)
+            time.sleep(self.cfg["short_delay_s"])
+            if wait_for_file(csv_path, timeout=120):
+                self.log(f"exported {csv_path}")
+                return
+            self.screenshot(f"export-missing{attempt + 1}", force=True)
+            self.log(f"history export attempt {attempt + 1}: no file; retrying")
+            for h in [h for h, _, c in self.enum_windows() if c == "#32770"]:
+                self.win32_close(h)
+            time.sleep(self.cfg["short_delay_s"])
+        raise RuntimeError(f"export did not produce {csv_path}")
+
     def export_row1(self, csv_path: str, time_base_s: float, attempts: int = 3):
-        """'View Data' for the first grid row, then File > Export > To CSV
-        (keyboard only while the data window is open - see open_view_data).
-        RASAero may ask for a time base before the save dialog; the dialog
-        is answered with the keys in worker_config.json."""
+        """'View Data' for the first grid row, then export it to CSV."""
         vd = self.open_view_data(0)
         if vd is None:
             raise RuntimeError("View Data window did not open")
         try:
-            for attempt in range(attempts):
-                if os.path.exists(csv_path):
-                    os.remove(csv_path)
-                self.win32_focus(vd)
-                send_keys(self.cfg["keys"]["export"], pause=self.cfg["short_delay_s"])
-                # a time-base prompt (if any) shows up before the file dialog
-                t0 = time.time()
-                dlg = None
-                while time.time() - t0 < 30:
-                    dlgs = [h for h, _, c in self.enum_windows() if c == "#32770"]
-                    if dlgs:
-                        dlg = dlgs[0]
-                        break
-                    others = [(h, t) for h, t, c in self.enum_windows() if h != vd and t.strip() and "time" in t.lower()]
-                    if others:
-                        self.screenshot("time-base-dialog")
-                        downs = self.cfg["time_base_downs"].get(str(time_base_s), 0)
-                        if downs:
-                            send_keys("{DOWN %d}" % downs, pause=0.2)
-                        send_keys(self.cfg["keys"]["time_base_confirm"], pause=self.cfg["short_delay_s"])
-                        time.sleep(self.cfg["long_delay_s"])
-                    time.sleep(0.5)
-                if dlg is None:
-                    self.log("no save dialog appeared for the history export")
-                    self.screenshot("export-nodialog")
-                    send_keys("{ESC}{ESC}")
-                    continue
-                self.wait_responsive(dlg, 60)
-                time.sleep(self.cfg["long_delay_s"] * 2)
-                send_keys("%n")
-                time.sleep(0.5)
-                send_keys("^a")
-                send_keys(escape_keys(csv_path), with_spaces=True, pause=0.02)
-                time.sleep(0.5)
-                send_keys("{ENTER}")
-                time.sleep(self.cfg["long_delay_s"])
-                if wait_for_file(csv_path, timeout=120):
-                    self.log(f"exported {csv_path}")
-                    return
-                self.screenshot(f"export-missing{attempt + 1}")
-                self.log(f"history export attempt {attempt + 1}: no file; retrying")
-                for h in [h for h, _, c in self.enum_windows() if c == "#32770"]:
-                    self.win32_close(h)
-                time.sleep(self.cfg["long_delay_s"])
-            raise RuntimeError(f"export did not produce {csv_path}")
+            self._export_data_window(vd, csv_path, time_base_s, attempts)
         finally:
             self.close_hwnd(vd)
             time.sleep(self.cfg["short_delay_s"])
 
+    def export_rows(self, csv_paths: list[str], time_base_s: float, attempts: int = 3):
+        """'View Data' + export for every grid row 0..len(csv_paths)-1, in one
+        RASAero session. One Rerun All already covers every row, so a batch
+        of N reference flights costs one job's worth of overhead instead of
+        N - see rpa.pipeline.stage_reference / worker.batch_reference_export."""
+        for i, csv_path in enumerate(csv_paths):
+            vd = self.open_view_data(i)
+            if vd is None:
+                raise RuntimeError(f"View Data window did not open for row {i}")
+            try:
+                self._export_data_window(vd, csv_path, time_base_s, attempts)
+            finally:
+                self.close_hwnd(vd)
+                time.sleep(self.cfg["short_delay_s"])
+
+    def save_as_dialog_open(self) -> bool:
+        """A common file dialog with a Save button - not a message box,
+        which is a #32770 window too."""
+        return self.find_dialog_button(["Save", "&Save"])[1] is not None
+
     def save_document(self, path: str):
         """Ctrl+S; RASAero often answers with a Save As dialog even for a
-        file it opened - point it at `path` and confirm an overwrite."""
-        self.main.set_focus()
-        send_keys("^s")
-        time.sleep(self.cfg["long_delay_s"])
-        w, _ = self.find_dialog_button(["Save", "&Save"])
-        if w is not None:
+        file it opened - point it at `path` and confirm an overwrite. MUST
+        poll for the dialog (it can take longer than one tick to appear);
+        a single-shot check races it and leaves it open to block whatever
+        runs next. A silent save costs one long_delay_s, no more."""
+        self.ensure_foreground(self.main)
+        self.keys("^s")
+        if poll_until(self.save_as_dialog_open, self.cfg["long_delay_s"], 0.3):
             self.log("Save As dialog appeared; entering path")
             self.type_path_into_file_dialog(path)
             self.click_dialog_button(self.cfg["save_prompt_yes_titles"], timeout=2.0)  # overwrite? -> Yes
@@ -820,13 +1018,10 @@ class RASAero:
         self.click_dialog_button(self.cfg["save_prompt_yes_titles"], timeout=4.0, fallback_keys="{ENTER}")
         time.sleep(self.cfg["short_delay_s"])
         self.save_document(result_path)
-        t0 = time.time()
-        while time.time() - t0 < 20:
-            if os.path.getmtime(result_path) != before:
-                self.log("result file saved")
-                return True
-            time.sleep(0.5)
-        self.screenshot("save-not-detected")
+        if poll_until(lambda: os.path.getmtime(result_path) != before, 20, 0.2):
+            self.log("result file saved")
+            return True
+        self.screenshot("save-not-detected", force=True)
         self.log("WARNING: result file mtime did not change after save")
         return False
 
@@ -851,7 +1046,7 @@ def rows_with_results(cdx1_path: str) -> tuple[int, int]:
 
 def inspect_job(job_dir: Path, spec: dict, cfg: dict, repo: Path, log: Log):
     """Photograph and dump every window/menu so the GUI can be mapped remotely."""
-    ras = RASAero(cfg, log, debug_dir=job_dir)
+    ras = RASAero(dict(cfg, screenshots="all"), log, debug_dir=job_dir)  # inspection IS the screenshots
     tree = job_dir / "ui_tree.txt"
     try:
         ras.start()
@@ -1134,35 +1329,56 @@ def end_session(log: Log | None = None):
 
 
 def aero_export_job(job_dir: Path, spec: dict, cfg: dict, repo: Path, log: Log):
-    """Export one Aero Plots table (CD etc. vs Mach) as CSV.
-    spec: config 'stack' | 'sustainer', plot_range 'Mach 5', export_csv,
-    optional mach_alt [[mach, alt_ft], ...] entered through Options -> Mach-Alt
-    (saved back into result.CDX1 so the Mac side learns the XML schema)."""
+    """Export one or more Aero Plots tables (CD etc. vs Mach) as CSV, from one
+    open CDX1. spec: config 'stack' | 'sustainer', plot_range 'Mach 5', and
+    either a single export_csv (+ optional mach_alt [[mach, alt_ft], ...]
+    entered through Options -> Mach-Alt) or mach_alt_items: [{points,
+    export_csv}, ...] to export several altitudes of the same nozzle in one
+    job (rpa.pipeline.stage_aero, aero_tables.batch_altitudes). The single
+    form's result.CDX1 gets the *last* item's <MachAlt>, saved back so the
+    Mac side learns the XML schema."""
     ras = get_session(cfg, log, "aero", job_dir)
     inp = job_dir / spec["cdx1"]
     result = job_dir / spec["result_cdx1"]
     shutil.copyfile(inp, result)
-    csv_path = str(job_dir / spec["export_csv"])
+    items = spec.get("mach_alt_items") or [{"points": spec.get("mach_alt"), "export_csv": spec["export_csv"]}]
+    prof = Profile()
     try:
         ras.open_cdx1(str(result))
-        if spec.get("mach_alt"):
-            ras.enter_mach_alt(spec["mach_alt"])
-            ras.save_document(str(result))  # so the Mac side sees the <MachAlt> schema
-        hwnd = ras.open_aero_plots()
-        if hwnd is None:
-            raise RuntimeError("Aero Plots form did not open")
-        if spec.get("plot_range"):
-            ras.ap_select_plot_range(hwnd, spec["plot_range"])
-        radio = "radio_sustainer_booster" if spec.get("config", "stack") == "stack" else "radio_sustainer"
-        ras.ap_click(hwnd, radio)
-        ras.screenshot("aero-plots-configured")
-        ras.ap_export_csv(hwnd, csv_path)
-        ras.close_hwnd(hwnd)
+        prof.mark("open")
+        for i, item in enumerate(items):
+            csv_path = str(job_dir / item["export_csv"])
+            if item.get("points"):
+                ras.enter_mach_alt(item["points"])
+                ras.save_document(str(result))  # so the Mac side sees the <MachAlt> schema
+                prof.mark(f"mach_alt[{i}]")
+            hwnd = ras.open_aero_plots()
+            if hwnd is None:
+                # a dialog left over from save_document (or a slow click) can
+                # block the button; clear it and try the click once more
+                log("Aero Plots did not open - clearing stray dialogs and retrying once")
+                for _ in range(3):
+                    ras.keys("{ESC}")
+                    time.sleep(ras.cfg["short_delay_s"])
+                ras.ensure_foreground(ras.main)
+                time.sleep(ras.cfg["long_delay_s"])
+                hwnd = ras.open_aero_plots()
+            if hwnd is None:
+                raise RuntimeError(f"Aero Plots form did not open (item {i + 1}/{len(items)})")
+            if spec.get("plot_range"):
+                ras.ap_select_plot_range(hwnd, spec["plot_range"])
+            radio = "radio_sustainer_booster" if spec.get("config", "stack") == "stack" else "radio_sustainer"
+            ras.ap_click(hwnd, radio)
+            ras.screenshot("aero-plots-configured")
+            ras.ap_export_csv(hwnd, csv_path)
+            ras.close_hwnd(hwnd)
+            prof.mark(f"export[{i}]")
         _session["jobs"] += 1
     except Exception:
-        ras.screenshot("error")
+        ras.screenshot("error", force=True)
         end_session(log)
         raise
+    log(f"profile: {prof.summary()}")
 
 
 def process_job(job_dir: Path, spec: dict, cfg: dict, repo: Path, log: Log):
@@ -1176,36 +1392,54 @@ def process_job(job_dir: Path, spec: dict, cfg: dict, repo: Path, log: Log):
     result = job_dir / spec["result_cdx1"]
     shutil.copyfile(inp, result)
     motor_file = str(repo / spec["motor_file"].replace("/", os.sep))
+    prof = Profile()
     try:
         motor_hash = spec.get("motor_hash") or hashlib.md5(Path(motor_file).read_bytes()).hexdigest()
         if cfg["select_motor_file_each_job"] and motor_hash != _session["motor_hash"]:
             ras.select_motor_file(motor_file)  # RASAero remembers it; only redo it when the file changed
             _session["motor_hash"] = motor_hash
+        prof.mark("motor_file")
         ras.open_cdx1(str(result))
         ras.open_flight_sim()
+        prof.mark("open")
         ras.rerun_all(int(spec.get("n_rows", 1)), spec.get("wait_hint_s"))
+        prof.mark("rerun_all")
         if spec["type"] == "export":
             ras.export_row1(str(job_dir / spec["export_csv"]), float(spec.get("time_base_s", 0.01)))
+            prof.mark("export")
+        elif spec["type"] == "export_batch":
+            ras.export_rows([str(job_dir / name) for name in spec["export_csvs"]], float(spec.get("time_base_s", 0.01)))
+            prof.mark("export_batch")
         ras.close_flight_sim_and_save(str(result))
+        prof.mark("save")
         ok, n = rows_with_results(str(result))
         log(f"{ok}/{n} rows have results")
         if ok == 0:
-            ras.screenshot("no-results")
+            ras.screenshot("no-results", force=True)
             raise RuntimeError("no row has a MaxAltitude - simulations did not run, or RASAero did not recognise the motor names")
         _session["jobs"] += 1
     except Exception:
-        ras.screenshot("error")
+        ras.screenshot("error", force=True)
         try:
             ras.dump_tree(job_dir / "ui_tree.txt")
         except Exception:
             pass
         end_session(log)
         raise
+    log(f"profile: {prof.summary()}")
 
 
 def write_done(job_dir: Path, status: str, message: str, t0: float):
     body = json.dumps({"status": status, "message": message, "elapsed_s": round(time.time() - t0, 1), "finished": time.strftime("%Y-%m-%dT%H:%M:%S")}, indent=2)
     retry_io(lambda: (job_dir / "done.json").write_text(body), f"write {job_dir.name}/done.json")
+
+
+def write_status(repo: Path, body: dict):
+    """worker/worker_status.json: the job in progress, for the Mac GUI."""
+    try:
+        (repo / "worker" / "worker_status.json").write_text(json.dumps({**body, "epoch": time.time(), "time": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+    except OSError:
+        pass
 
 
 def pending_jobs(jobs_dir: Path):
@@ -1235,7 +1469,7 @@ def main(argv=None):
     ap.add_argument("--transport", choices=["share", "agent"], default="share", help="share: jobs arrive on the WebDAV share; agent: pushed by the Mac into --jobs on local disk")
     ap.add_argument("--config", default=None, help="worker_config.json (default: next to this script)")
     ap.add_argument("--once", action="store_true", help="process one job then exit")
-    ap.add_argument("--poll", type=float, default=3.0)
+    ap.add_argument("--poll", type=float, default=1.0)
     ap.add_argument("--inspect", metavar="OUTFILE", help="start RASAero, dump its UI tree to OUTFILE and exit")
     ap.add_argument("--inspect-cdx1", default=None, help="with --inspect: open this file and the Flight Simulation window first")
     args = ap.parse_args(argv)
@@ -1267,6 +1501,7 @@ def main(argv=None):
     script_hash = script_digest()
     last_check = time.time()
     release_abandoned_claims(jobs_dir, log)
+    write_status(repo, {"job": None})
     while True:
         # Re-exec when this file changes on the shared drive, so fixes made on
         # the Mac side take effect without anyone touching the VM.
@@ -1291,7 +1526,11 @@ def main(argv=None):
             jlog = Log(None, mirror=d / "worker.log")
             jlog(f"job {d.name}: {spec['type']} ({spec.get('n_rows')} rows); worker v{WORKER_VERSION}")
             t0 = time.time()
-            run_job_with_watchdog(d, spec, cfg, repo, jlog, t0, float(cfg.get("job_timeout_s", 1200)))
+            write_status(repo, {"job": d.name, "type": spec.get("type"), "n_rows": spec.get("n_rows"), "started": t0})
+            try:
+                run_job_with_watchdog(d, spec, cfg, repo, jlog, t0, float(cfg.get("job_timeout_s", 1200)))
+            finally:
+                write_status(repo, {"job": None, "last_job": d.name, "last_elapsed_s": round(time.time() - t0, 1)})
             if args.once:
                 return
         if not did:

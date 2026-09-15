@@ -28,7 +28,7 @@ from .models import SUBSONIC, SUPERSONIC, Characterization, ProfileEligibility
 DECEL_SUBSONIC = "decel_subsonic"
 
 
-def characterize(booster: str, h: pd.DataFrame, cfg: dict, expected_sep_delay: float, expected_ign_delay: float, rod_length_ft: float | None) -> Characterization:
+def characterize(booster: str, h: pd.DataFrame, cfg: dict, expected_sep_delay: float, expected_ign_delay: float, rod_length_ft: float | None, sustainer: str = "") -> Characterization:
     p = cfg["profiles"]
     m_super = p["supersonic_min_mach"] + p["mach_margin"]
     m_sub = p["subsonic_max_mach"] - p["mach_margin"]
@@ -69,6 +69,7 @@ def characterize(booster: str, h: pd.DataFrame, cfg: dict, expected_sep_delay: f
         ign_time_observed_s=(round(t_ign, 3) if t_ign is not None else None),
         events_consistent=consistent,
         note="; ".join(notes),
+        sustainer=sustainer,
     )
 
 
@@ -93,7 +94,7 @@ def eligibility(c: Characterization, h: pd.DataFrame, cfg: dict) -> list[Profile
     else:
         out.append(ProfileEligibility(c.booster, SUBSONIC, False, lo, hi, None, f"peak boost Mach {c.max_mach_boost:.3f} > {m_sub:.2f} (stack goes transonic/supersonic during boost)"))
 
-    # --- supersonic: separate while still above 1.2 -> separation no later than the window closes ---
+    # supersonic: separate while still above 1.2, no later than the window closes
     if c.max_mach_boost < m_super:
         out.append(ProfileEligibility(c.booster, SUPERSONIC, False, lo, hi, None, f"peak boost Mach {c.max_mach_boost:.3f} < {m_super:.2f} (never clearly supersonic)"))
     elif m_bo < m_super:
@@ -120,4 +121,6 @@ def eligibility(c: Characterization, h: pd.DataFrame, cfg: dict) -> list[Profile
                 out.append(ProfileEligibility(c.booster, DECEL_SUBSONIC, False, lo, hi, round(need, 3), f"stack drops below Mach {m_sub:.2f} only {need:.2f}s after burnout, after the latest allowed separation ({hi:g}s): raise profiles.separation_delay_max_s"))
             else:
                 out.append(ProfileEligibility(c.booster, DECEL_SUBSONIC, True, earliest, hi, round(need, 3), f"stack drops below Mach {m_sub:.2f} {need:.2f}s after burnout -> separation window {earliest:g}-{hi:g}s (attached stack crosses the transonic band twice)"))
+    for e in out:
+        e.sustainer = c.sustainer
     return out

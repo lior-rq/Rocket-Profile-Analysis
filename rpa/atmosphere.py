@@ -91,7 +91,7 @@ class Atmosphere:
                 hc, rc = self.calibration
                 inside = (h >= hc[0]) & (h <= hc[-1])
                 rho[inside] = np.exp(np.interp(h[inside], hc, np.log(rc)))
-                # above the measured range: continue with the local scale height of the last bins
+                # above the measured range: use the last bins' local scale height
                 if (h > hc[-1]).any():
                     hi = h > hc[-1]
                     H = (hc[-1] - hc[-2]) / np.log(rc[-2] / rc[-1]) if rc[-1] < rc[-2] else R_AIR * t_trop / G0

@@ -12,7 +12,7 @@ PROFILES = (SUBSONIC, SUPERSONIC)
 
 @dataclass
 class MassRow:
-    """Mass properties RASAero needs, per booster (the sustainer is fixed)."""
+    """Mass properties RASAero needs, per (booster, sustainer) pair."""
 
     booster: str
     sustainer_wt_lb: float
@@ -20,10 +20,15 @@ class MassRow:
     combined_wt_lb: float
     combined_cg_in: float
     booster_prop_kg: float
+    sustainer: str  # label
     # how the loaded weights were built (informational)
     sustainer_dry_lb: float | None = None
     booster_dry_lb: float | None = None
     hardware_mass_lb: float | None = None  # mass_model.hardware_mass_lb used, None = .ork masses as-is
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.booster, self.sustainer)
 
 
 @dataclass
@@ -42,6 +47,7 @@ class SimRow:
     combined_wt_lb: float
     combined_cg_in: float
     booster_nozzle_in: float
+    sustainer: str  # label of the sustainer motor flown
     # results
     max_alt_ft: float | None = None
     max_vel_fps: float | None = None
@@ -52,7 +58,7 @@ class SimRow:
     def __post_init__(self):
         if not self.tag:
             prof = self.profile or "char"
-            self.tag = f"{self.booster}|{prof}|sep={self.sep_delay_s:.2f}|ign={self.ign_delay_s:.2f}"
+            self.tag = f"{self.booster}+{self.sustainer}|{prof}|sep={self.sep_delay_s:.2f}|ign={self.ign_delay_s:.2f}"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -65,7 +71,7 @@ class SimRow:
 
 @dataclass
 class Characterization:
-    """What one long-coast run tells us about a booster under the fixed sustainer."""
+    """What one long-coast run tells us about a (booster, sustainer) stack."""
 
     booster: str
     t_burnout_s: float
@@ -75,13 +81,14 @@ class Characterization:
     alt_burnout_ft: float
     vel_burnout_fps: float
     rail_exit_vel_fps: float | None
-    # first time after burnout the *stack* Mach drops below each level (None = never above)
+    # first time after burnout the stack drops below each level (None = never above)
     t_below_supersonic_s: float | None
     t_below_subsonic_s: float | None
     sep_time_observed_s: float | None
     ign_time_observed_s: float | None
     events_consistent: bool
     note: str = ""
+    sustainer: str = ""
 
     def to_dict(self):
         return asdict(self)
@@ -92,10 +99,11 @@ class ProfileEligibility:
     booster: str
     profile: str
     eligible: bool
-    sep_min_s: float  # allowed separation-delay window for this booster/profile (user range ∩ physics)
+    sep_min_s: float  # allowed separation delay: user range intersected with physics
     sep_max_s: float
-    sep_window_max_s: float | None = None  # physics limit: supersonic = latest separation still > M1.2+margin; decel = earliest allowed
+    sep_window_max_s: float | None = None  # physics limit: latest supersonic sep, or earliest decel
     reason: str = ""
+    sustainer: str = ""
 
     def to_dict(self):
         return asdict(self)
@@ -103,7 +111,7 @@ class ProfileEligibility:
 
 @dataclass
 class Design:
-    """A (booster, profile, delays) solution that hits the target apogee."""
+    """A (booster, sustainer, profile, delays) solution that hits the target apogee."""
 
     booster: str
     profile: str
@@ -111,6 +119,7 @@ class Design:
     ign_delay_s: float
     apogee_ft: float
     status: str  # solved | underpowered | overpowered | unsolved | infeasible
+    sustainer: str
     n_sims: int = 0
     apogee_min_delay_ft: float | None = None
     apogee_max_delay_ft: float | None = None
@@ -128,6 +137,10 @@ class Design:
     verify_note: str = ""
     hint: str = ""
     extra: dict = field(default_factory=dict)
+
+    @property
+    def key(self) -> str:
+        return f"{self.booster}|{self.sustainer}|{self.profile}"
 
     def to_dict(self):
         d = asdict(self)

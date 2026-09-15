@@ -19,14 +19,14 @@ def test_propellant_recovered_from_openrocket_pairs():
 
 
 def test_no_override_reproduces_openrocket():
-    r = mass_row("B", SM, 13.6, None)
+    r = mass_row("B", SM, 13.6, None, "S")
     assert r.sustainer_wt_lb == 50.0 and r.combined_wt_lb == 120.0
     assert abs(r.sustainer_cg_in - SM.sustainer_loaded_cg_in) < 1e-3 and abs(r.combined_cg_in - SM.stack_loaded_cg_in) < 1e-3
     assert r.hardware_mass_lb is None and r.sustainer_dry_lb == 30.0 and r.booster_dry_lb == 40.0
 
 
 def test_hardware_mass_scales_dry_only():
-    r = mass_row("B", SM, 13.6, 140.0)  # twice the dry mass
+    r = mass_row("B", SM, 13.6, 140.0, "S")  # twice the dry mass
     assert r.sustainer_dry_lb == 60.0 and r.booster_dry_lb == 80.0 and r.hardware_mass_lb == 140.0
     assert r.sustainer_wt_lb == 80.0 and r.combined_wt_lb == 190.0  # + 20 and + 50 lb of propellant
     assert abs(r.sustainer_cg_in - (60 * 60 + 20 * 80) / 80) < 1e-3

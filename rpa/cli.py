@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import manifest
 from .config import load_config
 from .pipeline import Pipeline, log
 
@@ -30,6 +31,7 @@ def build_parser():
     ap.add_argument("--fresh", action="store_true", help="ignore cached stage outputs (re-runs everything for 'run')")
     ap.add_argument("--cases", type=int, default=10, help="reference: number of RASAero reference flights to export")
     ap.add_argument("--top", type=int, default=5, help="confirm: how many designs (closest to target) to re-run in RASAero")
+    ap.add_argument("--designs", default=None, help="confirm: comma-separated design keys booster|sustainer|profile (the GUI shortlist) instead of --top")
     ap.add_argument("--port", type=int, default=8765, help="gui: local port (default 8765)")
     ap.add_argument("--no-browser", action="store_true", help="gui: do not open the browser automatically")
     ap.add_argument("--make-app", action="store_true", help="gui: build the double-clickable 'Rocket Profile Analysis.app' (macOS) and exit")
@@ -63,7 +65,7 @@ def main(argv=None):
         over["profiles"] = {"include_decel_subsonic": True}
     cfg = load_config(args.config, root=args.root, overrides=over)
     if args.fresh:
-        for f in ["mass_table.csv", "characterization.csv", "eligibility.csv", "designs.csv", "designs_samples.json", "search_rows.csv"]:
+        for f in ["sustainers_selected.json", "mass_table.csv", "characterization.csv", "eligibility.csv", "designs.csv", "designs_samples.json", "search_rows.csv"]:
             p = cfg.output_dir / f
             if p.exists():
                 p.unlink()
@@ -84,12 +86,14 @@ def main(argv=None):
         pipe.inspect_rasaero()
         return
     if args.stage == "check":
-        sys.exit(1 if pipe.check() else 0)
+        problems = pipe.check()
+        manifest.write(cfg, "check", problems=len(problems))
+        sys.exit(1 if problems else 0)
     if args.stage == "aero":
-        pipe.stage_aero(force=args.fresh)
+        pipe.stage_aero(force=args.fresh, clear_stale=not (args.boosters or args.limit))
         return
     if args.stage == "confirm":
-        pipe.stage_confirm(top_n=args.top, include_unsolved=args.include_unsolved)
+        pipe.stage_confirm(top_n=args.top, include_unsolved=args.include_unsolved, designs=[k.strip() for k in args.designs.split(",") if k.strip()] if args.designs else None)
         return
     if args.stage == "reference":
         pipe.stage_reference(args.cases)
@@ -123,6 +127,7 @@ def run_stages(pipe, cfg, stages, args):
                 cols = [c for c in ["rank", "booster", "profile", "status", "sep_delay_s", "ign_delay_s", "apogee_ft", "mach_at_sep", "vel_at_ign_fps", "verified_ok"] if c in ranked.columns]
                 with pd.option_context("display.width", 200, "display.max_rows", 200):
                     print(ranked[cols].head(30).to_string(index=False))
+        manifest.write(cfg, st)
 
 
 if __name__ == "__main__":

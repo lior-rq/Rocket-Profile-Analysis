@@ -13,7 +13,7 @@
 #   register  -> create/refresh the task "RPAWorker" (at logon + on demand)
 #   start     -> register if needed, then start the task
 #   stop      -> stop the task and kill the worker / RASAero processes
-#   probe     -> network view from the guest: can it reach the Mac's SMB port, what drives are mapped
+#   probe     -> network view from the guest: SMB reachability, mapped drives
 param(
     [string]$Action = "status",
     [string]$TaskName = "RPAWorker",
@@ -21,7 +21,7 @@ param(
     [string]$Python = "auto",
     [string]$Nonce = "",
     [string]$Out = "C:\Windows\Temp\rpa_vm_result.json",
-    [string]$Transport = "share",      # share: run Z:\worker\run_worker.py ; agent: run the copy the Mac pushed to <Root>\worker
+    [string]$Transport = "share",      # share: run Z:\worker\run_worker.py ; agent: run the pushed copy
     [string]$Root = "C:\rpa",
     [string]$MacHost = "192.168.64.1"  # the Mac, as seen from the VM (probe)
 )
@@ -40,7 +40,7 @@ function Task-State {
     try { (Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop).State.ToString() } catch { "missing" }
 }
 function Find-Python($user) {
-    # the interactive user's python.org install, else whatever 'python' resolves to in their session
+    # the user's python.org install, else whatever 'python' resolves to for them
     if ($Python -ne "auto") { return $Python }
     $name = ($user -split "\\")[-1]
     $candidates = @()
@@ -67,7 +67,7 @@ function Register-Worker-Task {
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan)
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-    # an older name for the same task must not linger: two logon tasks would start two workers
+    # an old task name MUST NOT linger: two logon tasks would start two workers
     foreach ($old in @("RPA Worker")) { if ($old -ne $TaskName) { Unregister-ScheduledTask -TaskName $old -Confirm:$false -ErrorAction SilentlyContinue } }
     return $user
 }
@@ -126,7 +126,7 @@ try {
     $result.error = $_.Exception.Message
 }
 $json = $result | ConvertTo-Json -Depth 4 -Compress
-# base64 so `utmctl file pull` cannot mangle it; local copy first (no WebDAV caching), then the share as a fallback
+# base64 so `utmctl file pull` cannot mangle it; local copy, then share
 $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
 foreach ($path in @($Out, (Join-Path $Share "worker\vm_result.b64"))) {
     for ($i = 0; $i -lt 5; $i++) {

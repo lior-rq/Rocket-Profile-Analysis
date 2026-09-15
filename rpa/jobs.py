@@ -32,6 +32,7 @@ from pathlib import Path
 
 RERUN_SAVE = "rerun_save"
 EXPORT = "export"
+EXPORT_BATCH = "export_batch"  # spec.export_csvs: one View Data export per row
 INSPECT = "inspect"
 AERO_EXPORT = "aero_export"
 
@@ -52,6 +53,12 @@ class Job:
     @property
     def export_csv(self) -> Path | None:
         return self.dir / self.spec["export_csv"] if self.spec.get("export_csv") else None
+
+    @property
+    def export_csvs(self) -> list[Path]:
+        """Every View Data export the job must produce (export + export_batch)."""
+        names = [self.spec["export_csv"]] if self.spec.get("export_csv") else []
+        return [self.dir / n for n in names + list(self.spec.get("export_csvs") or [])]
 
     @property
     def done_file(self) -> Path:
@@ -108,6 +115,7 @@ class JobClient:
         job.spec["motor_hash"] = hashlib.md5(motor.read_bytes()).hexdigest() if motor.exists() else None  # the worker re-selects the motor file only when this changes
         if self.transport == "agent":
             self._push_job(job)
+            (job.dir / "pushed").write_text(time.strftime("%Y-%m-%dT%H:%M:%S"))  # GUI: not an orphan
         # write job.json last so the worker never sees a half-written job
         (job.dir / "job.json").write_text(json.dumps(job.spec, indent=2))
         if self.mode == "manual":
@@ -185,18 +193,25 @@ class JobClient:
     def _manual_outputs_ready(self, job: Job) -> bool:
         if not job.result_cdx1.exists():
             return False
-        if job.export_csv and not _file_settled(job.export_csv):
+        if not all(_file_settled(p) for p in job.export_csvs):
             return False
         return _file_settled(job.result_cdx1)
 
     def _print_manual_instructions(self, job: Job):
         vm = job.dir.relative_to(self.repo_root)
+        exports = job.export_csvs
+        if len(exports) == 1:
+            step4 = f"    4. Row 1: View Data > File > Export (0.01 s) -> save as {exports[0].name} in the same folder\n"
+        elif exports:
+            step4 = f"    4. Every row i (1-{len(exports)}): View Data > File > Export (0.01 s) -> save as {exports[0].name} .. {exports[-1].name} in the same folder\n"
+        else:
+            step4 = ""
         self.log(
             "\n  MANUAL STEP in RASAero II (VM path Z:\\" + str(vm).replace("/", "\\") + "):\n"
             f"    1. File > Select Motor File: Z:\\{job.spec['motor_file'].replace('/', chr(92))}\n"
             f"    2. File > Open: input.CDX1 from the folder above\n"
             "    3. Flight Simulation > Simulations > Rerun All Simulations\n"
-            + ("    4. Row 1: View Data > File > Export (0.01 s) -> save as export.csv in the same folder\n" if job.spec.get("export_csv") else "")
+            + step4
             + "    5. File > Save As -> result.CDX1 in the same folder\n"
             "  (this program continues automatically once the files appear)"
         )

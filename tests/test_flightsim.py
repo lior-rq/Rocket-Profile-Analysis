@@ -48,7 +48,7 @@ def test_atmosphere_standard_sea_level():
 
 def test_aero_interpolation(tmp_path):
     aero = AeroSet.load(write_tables(tmp_path / "aero", stack_noz=(3.0, 5.0)))
-    # power-on differs per nozzle file only by construction here, so check the bookkeeping
+    # power-on differs per nozzle file only by construction; check the bookkeeping
     m3 = aero.model(STACK, 3.0)
     m4 = aero.model(STACK, 4.0)
     assert m3.cd(1.1, 3000, False) == pytest.approx(float(cd_curve(1.1)), rel=1e-6)
@@ -117,7 +117,8 @@ def test_validation_harness_passes_on_own_output(tmp_path):
         def booster(self, label):
             return booster
 
-        pass
+        def sustainer_by_label(self, label):
+            return self.sustainer
 
     cfg = load_config(root=tmp_path)
     cfg["paths"]["aero_dir"] = str(aero_dir)
@@ -125,7 +126,7 @@ def test_validation_harness_passes_on_own_output(tmp_path):
     ms = MS()
     ms.sustainer = sustainer
     be = PythonBackend(cfg, ms, SITE, 6.12)
-    row = SimRow("b", None, 1.0, 6.0, "X", "X", 60.0, 50.0, 2.4, 125.0, 70.0, 3.9)
+    row = SimRow("b", None, 1.0, 6.0, "X", "X", 60.0, 50.0, 2.4, 125.0, 70.0, 3.9, "s")
     h = be.export(row, "case")
     inv = {v: k for k, v in RASAERO_COLUMNS.items()}
     export = h.rename(columns=inv)
@@ -165,7 +166,7 @@ def test_parallel_batch_matches_serial(tmp_path):
     cfg = load_config(root=tmp_path)
     cfg["paths"]["aero_dir"] = str(aero_dir)
     cfg["paths"]["output_dir"] = str(tmp_path / "out")
-    rows = [SimRow(b.label, None, sep, ign, "X", "X", 60.0, 50.0, 2.4, 125.0, 70.0, 3.9) for b in boosters for sep in (0.0, 1.0) for ign in (2.0, 6.0)]
+    rows = [SimRow(b.label, None, sep, ign, "X", "X", 60.0, 50.0, 2.4, 125.0, 70.0, 3.9, sustainer.label) for b in boosters for sep in (0.0, 1.0) for ign in (2.0, 6.0)]
     serial = PythonBackend(cfg, ms, SITE, 6.12, log=lambda *_: None, workers=1)
     rows_s = copy.deepcopy(rows)
     serial.run_batch(rows_s, "s")

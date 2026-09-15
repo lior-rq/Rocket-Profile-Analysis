@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import pandas as pd
 import yaml
 
+from .design import DesignAssets
 from .runner import Runner
 from .state import TABLES, StateCollector, records
 from .vm import VMControl
@@ -32,22 +33,52 @@ from .yamledit import set_many
 
 STATIC = Path(__file__).parent / "static"
 STAGES = {"check", "aero", "reference", "validate", "run", "motors", "mass", "characterize", "search", "verify", "report", "confirm", "inspect"}
-FLAGS = {"--backend", "--target", "--tolerance", "--worker-mode", "--boosters", "--limit", "--include-unsolved", "--decel-subsonic", "--fresh", "--cases", "--top"}
+FLAGS = {"--backend", "--target", "--tolerance", "--worker-mode", "--boosters", "--limit", "--include-unsolved", "--decel-subsonic", "--fresh", "--cases", "--top", "--designs"}
+
+
+def history_frame_payload(df: pd.DataFrame, max_points: int) -> dict:
+    """Downsample a time-history frame for the browser + its flight summary
+    (burnout/separation/ignition/apogee). Shared by history() and simulate()."""
+    from .. import history as H
+
+    n = len(df)
+    stride = max(1, math.ceil(n / max_points))
+    sub = df.iloc[::stride]
+    if n and (n - 1) % stride:
+        sub = pd.concat([sub, df.iloc[[-1]]])
+    cols = {}
+    for c in sub.columns:
+        s = sub[c]
+        if pd.api.types.is_numeric_dtype(s):
+            cols[c] = [None if (isinstance(v, float) and math.isnan(v)) else float(v) for v in s.tolist()]
+        else:
+            cols[c] = [str(v) for v in s.tolist()]
+    summary = {}
+    try:
+        t_bo = H.burnout_time(df)
+        summary = {"apogee_ft": float(df["altitude_ft"].max()), "t_apogee_s": float(df.loc[df["altitude_ft"].idxmax(), "time_s"]), "max_mach": float(df["mach"].max()), "max_vel_fps": float(df["velocity_fps"].max()), "t_burnout_s": t_bo, "t_sep_s": H.separation_time(df, after=t_bo), "t_ign_s": H.ignition_time(df, after=t_bo)}
+    except Exception:
+        pass
+    return {"n": n, "stride": stride, "columns": cols, "summary": summary}
 
 
 class App:
     def __init__(self, root: Path, watch: bool = True):
         self.root = Path(root).resolve()
         self.state = StateCollector(self.root)
-        self.runner = Runner(self.root, self.root / "output" / "gui_runs.json")
+        self.runner = Runner(self.root, self.root / "output" / "gui_runs.json", log_dir=self.root / "output" / "gui_logs")
+        self.design = DesignAssets(self.state, self.root)
         self.allowed_roots = [self.root / "output", self.root / "jobs", self.root / "input"]
         cfg = self.state.config()
         self.vm = VMControl(cfg.get("vm"), self.root, log=self.runner.note, transport=self.transport_for(cfg))
         self._sig = None
         self._last_pull = 0.0
+        self._sim_backend = None  # (config.yaml mtime, PythonBackend) - see simulate()
         self.httpd = None
+        self._samples = None  # (mtime_ns, parsed designs_samples.json)
         if watch:
             threading.Thread(target=self._watch, daemon=True).start()
+            threading.Thread(target=self._pull_loop, daemon=True).start()
 
     @staticmethod
     def transport_for(cfg) -> str:
@@ -73,13 +104,9 @@ class App:
 
     def _watch(self):
         """Tell the browsers when any input/output/job file changes (worker
-        results, a run finishing, the user editing config.yaml by hand). With
-        the agent transport also pull the worker's heartbeat and console."""
+        results, a run finishing, the user editing config.yaml by hand)."""
         while True:
             try:
-                if self.vm.transport == "agent" and self.vm.available and time.time() - self._last_pull > 12 and not self.vm.op["running"] and self.vm.vm_status() == "started":
-                    self._last_pull = time.time()
-                    self.vm.pull_worker_files(self.root / "worker")
                 sig = self.state.signature()
                 if sig != self._sig:
                     first = self._sig is None
@@ -90,10 +117,180 @@ class App:
                 pass
             time.sleep(1.5 if self.runner.current()["running"] else 2.5)
 
+    def _pull_loop(self):
+        """Agent transport: the worker's heartbeat, status and console live
+        on the VM's disk; pull them every 12 s. Its own thread, so a slow
+        utmctl call never delays the file watcher."""
+        while True:
+            try:
+                if self.vm.transport == "agent" and self.vm.available and not self.vm.op["running"] and self.vm.vm_status() == "started":
+                    self._last_pull = time.time()
+                    self.vm.pull_worker_files(self.root / "worker")
+            except Exception:
+                pass
+            time.sleep(12)
+
+    # ---- result snapshots (output-archive/<stamp>/) ----------------------------
+    RESULT_FILES = ["designs.csv", "designs_ranked.csv", "designs_samples.json", "report.md", "characterization.csv", "eligibility.csv", "mass_table.csv", "run_manifest.json", "sustainers_selected.json", "selected_sustainer.json", "confirm.csv", "boosters.csv", "sustainers.csv", "shortlist.json", "apogee_vs_delay.png", "boost_mach.png", "final_mach_vs_time.png"]
+
+    def archive_dir(self) -> Path:
+        return self.root / "output-archive"
+
+    def snapshot_outputs(self, label: str | None = None) -> dict | None:
+        """Copy the current results to output-archive/<stamp>[-label]/ so a
+        fresh run never loses the previous answer. None when there are no
+        designs to keep."""
+        import shutil
+
+        out = self.root / "output"
+        if not (out / "designs.csv").exists():
+            return None
+        safe = "".join(ch for ch in str(label or "") if ch.isalnum() or ch in "_-")[:40]
+        name = time.strftime("%Y%m%d-%H%M%S") + (f"-{safe}" if safe else "")
+        dst = self.archive_dir() / name
+        dst.mkdir(parents=True, exist_ok=True)
+        copied = []
+        for f in self.RESULT_FILES:
+            p = out / f
+            if p.exists():
+                shutil.copy2(p, dst / f)
+                copied.append(f)
+        (dst / "snapshot.json").write_text(json.dumps({"name": name, "label": label, "created": time.time(), "files": copied}, indent=1))
+        self.runner.note(f"gui: results snapshot -> output-archive/{name} ({len(copied)} files)")
+        return {"name": name, "files": copied}
+
+    def archives(self) -> dict:
+        out = []
+        d = self.archive_dir()
+        if d.exists():
+            for p in sorted(d.iterdir(), reverse=True):
+                if not p.is_dir() or not (p / "designs.csv").exists():
+                    continue
+                n = None
+                try:
+                    with open(p / "designs.csv") as f:
+                        n = sum(1 for _ in f) - 1
+                except OSError:
+                    pass
+                meta = {}
+                try:
+                    meta = json.loads((p / "snapshot.json").read_text())
+                except (OSError, ValueError):
+                    pass
+                out.append({"name": p.name, "mtime": (p / "designs.csv").stat().st_mtime, "n_designs": n, "label": meta.get("label"), "bytes": sum(f.stat().st_size for f in p.iterdir() if f.is_file())})
+        return {"archives": out}
+
+    def archive_designs(self, name: str) -> dict:
+        if "/" in name or "\\" in name or name.startswith("."):
+            raise PermissionError(name)
+        p = self.archive_dir() / name / "designs.csv"
+        if not p.exists():
+            raise FileNotFoundError(name)
+        df = pd.read_csv(p)
+        man = {}
+        try:
+            man = json.loads((self.archive_dir() / name / "run_manifest.json").read_text())
+        except (OSError, ValueError):
+            pass
+        target = (man.get("search") or {}).get("config", {}).get("target.apogee_ft")
+        return {"name": name, "columns": list(df.columns), "rows": records(df), "target_ft": target}
+
+    def job_action(self, name: str, action: str) -> dict:
+        """reveal | discard (queued or orphan folders -> jobs/_discarded/) |
+        delete (finished folders)."""
+        import shutil
+
+        if "/" in name or "\\" in name or name.startswith("."):
+            raise PermissionError(name)
+        jobs_dir = self.state.config().path("jobs_dir")
+        d = jobs_dir / name
+        if not d.is_dir():
+            raise FileNotFoundError(name)
+        if action == "reveal":
+            self.reveal(str(d.relative_to(self.root)) if self.root in d.parents else str(d))
+            return {"ok": True}
+        info = self.state.job_info(d, brief=True)
+        if action == "discard":
+            if info["state"] not in ("queued", "orphan", "empty"):
+                raise ValueError(f"{name} is {info['state']}; only waiting or orphan jobs can be discarded")
+            dst = jobs_dir / "_discarded" / name
+            dst.parent.mkdir(exist_ok=True)
+            shutil.move(str(d), str(dst))
+            self.runner.note(f"gui: job {name} discarded -> {dst.relative_to(self.root) if self.root in dst.parents else dst}")
+            return {"ok": True, "moved_to": str(dst)}
+        if action == "delete":
+            if info["state"] == "running":
+                raise ValueError(f"{name} is running")
+            shutil.rmtree(d)
+            self.runner.note(f"gui: job {name} deleted")
+            return {"ok": True}
+        raise ValueError(f"unknown job action {action!r}")
+
+    def disk_usage(self) -> dict:
+        """Sizes of the bulky outputs (histories, jobs, search rows)."""
+        out = self.root / "output"
+
+        def tree(p: Path) -> tuple[int, int]:
+            n = size = 0
+            try:
+                for e in os.scandir(p):
+                    if e.is_dir(follow_symlinks=False):
+                        k, s = tree(Path(e.path))
+                        n += k
+                        size += s
+                    elif e.is_file(follow_symlinks=False):
+                        n += 1
+                        size += e.stat().st_size
+            except OSError:
+                pass
+            return n, size
+
+        hist = tree(out / "histories")
+        jobs_dir = self.state.config().path("jobs_dir")
+        jobs = tree(jobs_dir)
+        sr = out / "search_rows.csv"
+        return {
+            "histories": {"files": hist[0], "bytes": hist[1], "path": "output/histories"},
+            "jobs": {"files": jobs[0], "bytes": jobs[1], "folders": sum(1 for e in os.scandir(jobs_dir) if e.is_dir()) if jobs_dir.exists() else 0, "path": str(jobs_dir.relative_to(self.root)) if self.root in jobs_dir.parents else str(jobs_dir)},
+            "search_rows": {"files": int(sr.exists()), "bytes": sr.stat().st_size if sr.exists() else 0, "path": "output/search_rows.csv"},
+        }
+
+    def cleanup(self, what: str, older_days: float = 7.0) -> dict:
+        """Delete bulky outputs: flight histories, finished job folders older
+        than `older_days`, or the search rows dump. Returns what went."""
+        import shutil
+
+        out = self.root / "output"
+        freed = n = 0
+        if what == "histories":
+            for p in (out / "histories").glob("*.csv") if (out / "histories").exists() else []:
+                freed += p.stat().st_size
+                p.unlink()
+                n += 1
+        elif what == "jobs":
+            jobs_dir = self.state.config().path("jobs_dir")
+            cutoff = time.time() - float(older_days) * 86400
+            for d in sorted(jobs_dir.iterdir()) if jobs_dir.exists() else []:
+                if not d.is_dir() or not (d / "done.json").exists() or d.stat().st_mtime > cutoff:
+                    continue
+                freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                shutil.rmtree(d, ignore_errors=True)
+                n += 1
+        elif what == "search_rows":
+            p = out / "search_rows.csv"
+            if p.exists():
+                freed, n = p.stat().st_size, 1
+                p.unlink()
+        else:
+            raise ValueError(f"unknown cleanup target {what!r}")
+        self.runner.note(f"gui: cleanup {what}: removed {n} item(s), {freed / 1048576:.1f} MB")
+        return {"what": what, "removed": n, "bytes": freed, "disk": self.disk_usage()}
+
     # ---- safe paths ---------------------------------------------------------
     def resolve(self, rel: str) -> Path:
         p = (self.root / unquote(rel)).resolve()
-        if not any(p == r or r in p.parents for r in self.allowed_roots):
+        roots = [r.resolve() for r in self.allowed_roots]  # input/ may be a symlink
+        if not any(p == r or r in p.parents for r in roots):
             raise PermissionError(rel)
         return p
 
@@ -109,46 +306,50 @@ class App:
             df = df.head(limit)
         return {"columns": list(df.columns), "rows": records(df), "mtime": p.stat().st_mtime, "n": len(df)}
 
-    def histories(self) -> dict:
-        out = []
-        hd = self.root / "output" / "histories"
-        if hd.exists():
-            for p in sorted(hd.glob("*.csv")):
-                kind = "final" if p.name.startswith("final-") else "characterization" if p.name.startswith("char-") else "other"
-                out.append({"name": p.stem, "path": str(p.relative_to(self.root)), "kind": kind, "mtime": p.stat().st_mtime})
-        rd = self.root / "input" / "rasaero_reference"
-        if rd.exists():
-            for p in sorted(rd.glob("*.csv")):
-                if p.name == "density_calibration.csv":
-                    continue
-                out.append({"name": p.stem, "path": str(p.relative_to(self.root)), "kind": "rasaero_reference", "mtime": p.stat().st_mtime})
-        return {"histories": out}
-
     def history(self, rel: str, max_points: int = 1500) -> dict:
         p = self.resolve(rel)
         from .. import history as H
 
         df = pd.read_csv(p, nrows=1)
         df = H.read_rasaero_export(p) if "Time (sec)" in df.columns else pd.read_csv(p)
-        n = len(df)
-        stride = max(1, math.ceil(n / max_points))
-        sub = df.iloc[::stride]
-        if n and (n - 1) % stride:
-            sub = pd.concat([sub, df.iloc[[-1]]])
-        cols = {}
-        for c in sub.columns:
-            s = sub[c]
-            if pd.api.types.is_numeric_dtype(s):
-                cols[c] = [None if (isinstance(v, float) and math.isnan(v)) else float(v) for v in s.tolist()]
-            else:
-                cols[c] = [str(v) for v in s.tolist()]
-        summary = {}
+        return {"path": rel, **history_frame_payload(df, max_points)}
+
+    def simulate(self, booster: str, sustainer: str, profile: str, sep: float, ign: float, max_points: int = 1500) -> dict:
+        """On-demand python-backend flight for a design that has not gone
+        through the verify stage yet (no output/histories/final-*.csv)."""
+        from ..pipeline import Pipeline
+        from ..search import make_row
+
+        cfg = self.state.config()
+        ms, err = self.state.motor_set(cfg)
+        if ms is None:
+            raise ValueError(f"motor set unavailable: {err}")
+        pl = Pipeline(cfg)
+        pl._ms = ms  # the GUI's tolerant loader (run tables / staged motors), not paths.boosters
+        be = self._python_backend(pl, ms)
+        mass = pl.load_mass().get((booster, sustainer))
+        if mass is None:
+            raise ValueError(f"no mass row for {booster} + {sustainer} (run the mass stage first)")
+        row = make_row(booster, profile, sep, ign, pl.ms, mass, pl.cfg)
+        df = be.history(row, "on-demand")
+        return {"path": None, **history_frame_payload(df, max_points)}
+
+    def _python_backend(self, pl, ms):
+        """One PythonBackend per config.yaml mtime + motor set; aero tables
+        (the slow part) load once and are reused across designs."""
+        from ..backends import PythonBackend
+
         try:
-            t_bo = H.burnout_time(df)
-            summary = {"apogee_ft": float(df["altitude_ft"].max()), "t_apogee_s": float(df.loc[df["altitude_ft"].idxmax(), "time_s"]), "max_mach": float(df["mach"].max()), "max_vel_fps": float(df["velocity_fps"].max()), "t_burnout_s": t_bo, "t_sep_s": H.separation_time(df, after=t_bo), "t_ign_s": H.ignition_time(df, after=t_bo)}
-        except Exception:
-            pass
-        return {"path": rel, "n": n, "stride": stride, "columns": cols, "summary": summary}
+            cfg_mtime = (self.root / "config.yaml").stat().st_mtime_ns
+        except OSError:
+            cfg_mtime = None
+        key = (cfg_mtime, id(ms))
+        cached = self._sim_backend
+        if cached and cached[0] == key:
+            return cached[1]
+        be = PythonBackend(pl.cfg, pl.ms, pl.site, pl.ref_diameter_in, log=lambda *_: None, workers=1)
+        self._sim_backend = (key, be)
+        return be
 
     def aero_table(self, rel: str) -> dict:
         p = self.resolve(rel)
@@ -158,22 +359,59 @@ class App:
         return {"path": rel, "mach": t.mach.tolist(), "cd_off": t.cd_off.tolist(), "cd_on": t.cd_on.tolist()}
 
     def motors(self) -> dict:
-        """The motor set as currently configured (no pipeline stage needed)."""
-        from ..motors import motor_table
+        """Every motor in the configured sources, excluded ones flagged (the
+        picker's per-motor list inside multi-motor files)."""
+        from ..eng import load_motors
+        from .state import _rel
 
         cfg = self.state.config()
-        ms, err = self.state.motor_set(cfg)
-        if ms is None:
-            return {"columns": [], "rows": [], "error": err}
-        df = motor_table(ms.boosters)
-        df = df.drop(columns=["file", "manufacturer", "diameter_mm", "length_mm"], errors="ignore")
-        sus = motor_table(ms.sustainer_candidates).drop(columns=["file", "manufacturer", "diameter_mm", "length_mm"], errors="ignore")
-        sus["selected"] = sus["label"] == ms.sustainer.label
-        return {"columns": list(df.columns), "rows": records(df), "sustainers": records(sus)}
+        conv = self.state.ric_converter(cfg)
+        out = {}
+        for kind in ("boosters", "sustainers"):
+            try:
+                motors = load_motors(cfg.motor_sources(kind), ric=conv)
+            except Exception as e:  # noqa: BLE001 - reported in the payload
+                out[kind] = {"rows": [], "excluded": sorted(cfg.excluded(kind)), "error": f"{type(e).__name__}: {e}"}
+                continue
+            ex = cfg.excluded(kind)
+            rows = [{"label": m.label, "designation": m.designation, "total_impulse_ns": round(m.total_impulse_ns, 1), "burn_time_s": round(m.burn_time_s, 2), "avg_thrust_n": round(m.avg_thrust_n, 1), "peak_thrust_n": round(m.peak_thrust_n, 1), "prop_mass_kg": m.prop_mass_kg, "nozzle_exit_in": m.nozzle_exit_in, "file": _rel(m.path, self.root), "n_in_file": m.n_in_file, "excluded": m.label in ex} for m in motors]
+            out[kind] = {"rows": rows, "excluded": sorted(ex)}
+        return out
 
-    def samples(self) -> dict:
+    def samples(self, key: str | None = None) -> dict:
+        """Search samples per design; parsed once per file version, one key
+        at a time for the browser (the whole file is megabytes)."""
         p = self.root / "output" / "designs_samples.json"
-        return json.loads(p.read_text()) if p.exists() else {}
+        if not p.exists():
+            return {}
+        mt = p.stat().st_mtime_ns
+        if not self._samples or self._samples[0] != mt:
+            self._samples = (mt, json.loads(p.read_text()))
+        data = self._samples[1]
+        if key is None:
+            return data
+        keys = [k for k in key.split(",") if k] if "," in key else [key]
+        return {k: data.get(k, []) for k in keys}
+
+    # ---- shortlist (output/shortlist.json, shared with `rpa confirm --designs`) ----
+    def shortlist(self) -> dict:
+        p = self.root / "output" / "shortlist.json"
+        try:
+            d = json.loads(p.read_text())
+            return {"keys": [str(k) for k in d.get("keys") or []], "updated": d.get("updated")}
+        except (OSError, ValueError, AttributeError):
+            return {"keys": [], "updated": None}
+
+    def set_shortlist(self, body: dict) -> dict:
+        keys = self.shortlist()["keys"]
+        if isinstance(body.get("keys"), list):
+            keys = [str(k) for k in body["keys"]]
+        if body.get("add"):
+            keys = [*keys, str(body["add"])] if str(body["add"]) not in keys else keys
+        if body.get("remove"):
+            keys = [k for k in keys if k != str(body["remove"])]
+        (self.root / "output" / "shortlist.json").write_text(json.dumps({"keys": keys, "updated": time.time()}, indent=1))
+        return self.shortlist()
 
     def config_payload(self) -> dict:
         p = self.root / "config.yaml"
@@ -229,6 +467,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_download(self, name: str, data: bytes, ctype: str = "application/octet-stream"):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     def read_body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b""
@@ -250,7 +497,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ping":
                 return self.send_json({"app": "rpa", "root": str(app.root), "pid": os.getpid(), "running": app.runner.current()["running"]})
             if path == "/api/state":
-                return self.send_json(app.state.collect(app.runner, app.vm))
+                st = app.state.collect(app.runner, app.vm)
+                st["disk"] = app.disk_usage()
+                return self.send_json(st)
             if path == "/api/vm/guest":
                 return self.send_json(app.vm.guest_status())
             if path == "/api/options":
@@ -264,8 +513,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.sse()
             if path.startswith("/api/table/"):
                 return self.send_json(app.table(path.split("/")[3], int(qs["limit"][0]) if "limit" in qs else None))
-            if path == "/api/histories":
-                return self.send_json(app.histories())
             if path == "/api/history":
                 return self.send_json(app.history(qs["path"][0], int(qs.get("max", ["1500"])[0])))
             if path == "/api/aero":
@@ -273,7 +520,32 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/motors":
                 return self.send_json(app.motors())
             if path == "/api/samples":
-                return self.send_json(app.samples())
+                return self.send_json(app.samples(qs.get("keys", qs.get("key", [None]))[0]))
+            if path == "/api/shortlist":
+                return self.send_json(app.shortlist())
+            if path == "/api/runs":
+                return self.send_json({"history": app.runner.history, "runner": app.runner.current()})
+            if path == "/api/archives":
+                return self.send_json(app.archives())
+            if path == "/api/archive":
+                return self.send_json(app.archive_designs(qs["name"][0]))
+            if path == "/api/worker":
+                return self.send_json(app.state.worker_status(app.state.config(), app.vm))
+            if path == "/api/disk":
+                return self.send_json(app.disk_usage())
+            if path == "/api/design":
+                return self.send_json(app.design.design(qs["booster"][0], qs.get("sustainer", [None])[0], qs.get("profile", [None])[0]))
+            if path == "/api/flight":
+                return self.send_json(app.simulate(qs["booster"][0], qs["sustainer"][0], qs.get("profile", [""])[0], float(qs["sep"][0]), float(qs["ign"][0])))
+            if path == "/download/eng":
+                kind = qs.get("kind", ["booster"])[0]
+                if kind not in ("booster", "sustainer"):
+                    return self.send_json({"error": "kind must be booster or sustainer"}, HTTPStatus.BAD_REQUEST)
+                name, data = app.design.eng_download(kind, qs["label"][0])
+                return self.send_download(name, data, "text/plain; charset=utf-8")
+            if path == "/download/combo":
+                name, data = app.design.combo_download(qs["booster"][0], qs["sustainer"][0], qs.get("profile", [None])[0])
+                return self.send_download(name, data, "application/zip")
             if path.startswith("/api/job/"):
                 d = app.resolve("jobs/" + path.split("/")[3])
                 return self.send_json(app.state.job_info(d))
@@ -291,6 +563,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": f"forbidden: {e}"}, HTTPStatus.FORBIDDEN)
         except FileNotFoundError as e:
             return self.send_json({"error": f"not found: {e}"}, HTTPStatus.NOT_FOUND)
+        except KeyError as e:
+            return self.send_json({"error": f"missing query parameter {e}"}, HTTPStatus.BAD_REQUEST)
         except (BrokenPipeError, ConnectionResetError):
             return None
         except Exception as e:
@@ -312,10 +586,18 @@ class Handler(BaseHTTPRequestHandler):
                 for a in args:
                     if a.startswith("-") and a not in FLAGS:
                         return self.send_json({"error": f"flag not allowed: {a}"}, HTTPStatus.BAD_REQUEST)
+                if stage == "run" and "--fresh" in args and not app.runner.current()["running"]:
+                    try:
+                        app.snapshot_outputs("before-fresh")  # the previous answer survives the fresh run
+                    except OSError as e:
+                        app.runner.note(f"gui: could not snapshot the results before the fresh run: {e}")
                 try:
                     return self.send_json(app.runner.start(stage, args, body.get("label")))
                 except RuntimeError as e:
                     return self.send_json({"error": str(e)}, HTTPStatus.CONFLICT)
+            if u.path == "/api/archive":
+                snap = app.snapshot_outputs(body.get("label"))
+                return self.send_json(snap or {"error": "nothing to snapshot: no designs.csv"}, HTTPStatus.OK if snap else HTTPStatus.BAD_REQUEST)
             if u.path == "/api/quit":
                 app.runner.note("gui: quitting - the server stops now; close this tab")
                 self.send_json({"ok": True})
@@ -345,6 +627,20 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/reveal":
                 app.reveal(body.get("path", ""))
                 return self.send_json({"ok": True})
+            if u.path == "/api/shortlist":
+                return self.send_json(app.set_shortlist(body))
+            if u.path.startswith("/api/job/"):
+                try:
+                    return self.send_json(app.job_action(unquote(u.path.split("/")[3]), str(body.get("action"))))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
+                except FileNotFoundError as e:
+                    return self.send_json({"error": f"not found: {e}"}, HTTPStatus.NOT_FOUND)
+            if u.path == "/api/cleanup":
+                try:
+                    return self.send_json(app.cleanup(str(body.get("what")), float(body.get("older_days", 7))))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
             return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except PermissionError as e:
             return self.send_json({"error": f"forbidden: {e}"}, HTTPStatus.FORBIDDEN)
@@ -394,7 +690,7 @@ def serve(root: Path, port: int = 8765, open_browser: bool = True, quiet: bool =
     """Serve the GUI. If one is already running for this repo, open the
     browser on it instead of starting a second server; if the port is taken
     by something else, use the next free one."""
-    from .launcher import choose_port, notify, open_url
+    from .launcher import choose_port, notify, open_url, remove_lock, write_lock
 
     root = Path(root).resolve()
     port, running = choose_port(port, root)
@@ -405,12 +701,17 @@ def serve(root: Path, port: int = 8765, open_browser: bool = True, quiet: bool =
         notify("Rocket Profile Analysis", "The GUI is already running - opening it")
         if open_browser:
             open_url(url)
+            # macOS shows "the application is not open anymore" if the .app's
+            # own process exits before Finder finishes activating it - give
+            # that handshake time before this short-lived reuse path returns.
+            time.sleep(2.0)
         return
     app = App(root)
     handler = type("BoundHandler", (Handler,), {"app": app})
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     httpd.daemon_threads = True
     app.httpd = httpd
+    write_lock(root, port)
     if not quiet:
         print(f"Rocket Profile Analysis GUI: {url}  (Ctrl-C to stop, or Quit in the page header)", flush=True)
     if open_browser:
@@ -422,3 +723,4 @@ def serve(root: Path, port: int = 8765, open_browser: bool = True, quiet: bool =
     finally:
         app.runner.cancel()
         httpd.server_close()
+        remove_lock(root)

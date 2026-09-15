@@ -104,6 +104,25 @@ def apply_nozzles(tree: ET.ElementTree, sustainer_in: float | None, booster_in: 
             el.text = _fmt(float(v))
 
 
+def apply_mach_alt(tree: ET.ElementTree, points: list[list[float]]) -> None:
+    """Options -> Mach-Alt points (mach, altitude ft), written straight into
+    the file instead of the dialog (rasaero.mach_alt_via_cdx1 - opt-in,
+    needs a live check that RASAero actually loads a pre-set <MachAlt> on
+    File->Open before this replaces the dialog by default). Schema and
+    number formatting verified against a worker-produced result.CDX1:
+    <MachAlt><Item>0, 20000</Item><Item>25, 20000</Item></MachAlt>."""
+    root = tree.getroot()
+    el = root.find("MachAlt")
+    if el is None:
+        el = ET.Element("MachAlt")
+        sl = root.find("SimulationList")
+        root.insert(list(root).index(sl) if sl is not None else len(root), el)
+    for child in list(el):
+        el.remove(child)
+    for mach, alt in points:
+        ET.SubElement(el, "Item").text = f"{_fmt(float(mach))}, {_fmt(float(alt))}"
+
+
 def reference_diameter_in(tree: ET.ElementTree) -> float:
     """Largest body diameter in the RocketDesign (RASAero's reference for CD)."""
     rd = tree.getroot().find("RocketDesign")

@@ -18,6 +18,7 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -45,9 +46,48 @@ def port_free(port: int) -> bool:
             return False
 
 
+LOCK_NAME = "gui.lock"
+
+
+def lock_path(root: Path) -> Path:
+    return Path(root) / "output" / LOCK_NAME
+
+
+def read_lock(root: Path) -> dict | None:
+    """The GUI serving this repo per output/gui.lock, if it still answers."""
+    try:
+        d = json.loads(lock_path(root).read_text())
+        info = ping(int(d["port"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if info and Path(info.get("root", "")).resolve() == Path(root).resolve():
+        return {**info, "port": int(d["port"])}
+    return None
+
+
+def write_lock(root: Path, port: int) -> None:
+    try:
+        lock_path(root).parent.mkdir(parents=True, exist_ok=True)
+        lock_path(root).write_text(json.dumps({"port": port, "pid": os.getpid(), "started": time.time()}))
+    except OSError:
+        pass
+
+
+def remove_lock(root: Path) -> None:
+    try:
+        if json.loads(lock_path(root).read_text()).get("pid") == os.getpid():
+            lock_path(root).unlink()
+    except (OSError, ValueError):
+        pass
+
+
 def choose_port(preferred: int, root: Path, tries: int = 10) -> tuple[int, dict | None]:
     """(port to serve on, running instance to reuse instead). A GUI already
-    serving this repo wins; a foreign process on the port is skipped."""
+    serving this repo wins (on any port, via output/gui.lock); a foreign
+    process on the port is skipped."""
+    running = read_lock(root)
+    if running is not None:
+        return running["port"], running
     for p in range(preferred, preferred + tries):
         info = ping(p)
         if info is not None:
@@ -59,9 +99,9 @@ def choose_port(preferred: int, root: Path, tries: int = 10) -> tuple[int, dict 
     raise OSError(f"no free port in {preferred}-{preferred + tries - 1}")
 
 
-# ---- macOS app bundle -----------------------------------------------------------
+# ---- macOS app bundle ----
 LAUNCH_SH = """#!/bin/bash
-# Rocket Profile Analysis - double-clickable launcher (built by `python -m rpa gui --make-app`)
+# double-clickable launcher (built by `python -m rpa gui --make-app`)
 ROOT="__ROOT__"
 if [ ! -d "$ROOT" ]; then
   osascript -e 'display alert "Rocket Profile Analysis" message "The project folder was not found:\\n__ROOT__\\n\\nRebuild the app from its new location with:  python -m rpa gui --make-app"'
@@ -185,7 +225,7 @@ def write_command_file(root: Path) -> Path:
     p = root / "Start GUI.command"
     p.write_text(
         "#!/bin/bash\n"
-        "# Double-click in Finder to open the Rocket Profile Analysis GUI. (Prefer the .app: `python -m rpa gui --make-app`.)\n"
+        "# Double-click to open the GUI. Prefer the .app: `python -m rpa gui --make-app`.\n"
         'cd "$(dirname "$0")"\n'
         "if [ ! -x .venv/bin/python ]; then\n"
         '  echo "No .venv yet - creating it (python3 -m venv .venv && pip install -r requirements.txt)"\n'

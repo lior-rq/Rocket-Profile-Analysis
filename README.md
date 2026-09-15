@@ -13,11 +13,15 @@ folders and files (`paths.boosters` / `paths.sustainers` in `config.yaml`,
 or ticked in the GUI's motor picker): one-motor RASP `.eng` files, a
 multi-motor `.eng` holding many motors, or openMotor `.ric` designs (each
 simulated once with openMotor's `motorlib` and cached, see `rpa/ric.py` and
-the `ric:` section of `config.yaml`). The sustainer with the
-highest total impulse is always used (a lower-impulse sustainer is never
-better), so the search space is
+the `ric:` section of `config.yaml`). Which sustainer candidates are flown
+is `sustainer_selection` in `config.yaml`: `best` (the max-impulse one only),
+`span` (a few - `count` - chosen by flying one reference booster under every
+candidate and keeping the lowest, highest and evenly spaced apogees; the
+sustainers here differ by ~2 % in impulse but their burn time moves apogee by
+several percent, in a direction that depends on the coast) or `list`. The
+search space is
 
-    booster (60) x profile type x separation delay x sustainer ignition delay
+    booster (90) x sustainer (1-5) x profile type x separation delay x sustainer ignition delay
 
 Two profile types are designed:
 
@@ -48,18 +52,42 @@ step pages in workflow order, each with the same shape: a one-line summary,
 an action panel (prerequisites as ✓/✗ chips, the Run button and its options,
 the equivalent command line), the step's data, a collapsed "how this step
 works", and previous/next buttons. Step 1 has four tabs — *Vehicle & site*,
-*Motors* (a checkbox tree of every `.eng` under `input/`: tick any mix of
-folders and single files for the booster and the sustainer candidates),
-*Mass* (hardware mass) and *Target & rules* — and saves into `config.yaml`
-in place with the comments kept. Status of every step is derived from the
-files on disk; the page updates itself the moment a file changes (file watcher
-→ server-sent events), shows live log / progress / ETA / cancel for the
-running command and a toast when it finishes. Results have sortable,
-filterable tables, interactive time-history / drag / apogee-vs-delay charts,
-the report and the plots; the VM worker's state and job queue have their own
-page, with **Start VM worker / Stop worker** buttons that boot the UTM VM and
-start the worker inside it. Light/dark theme toggle in the header. Code in `rpa/gui/` (stdlib HTTP
-server + one static page).
+*Motors* (a checkbox tree of every `.eng` under `input/`; inside a
+multi-motor file single motors can be switched off, `paths.exclude_*`),
+*Mass* and *Target & rules* (with the effective delay grids and a validity
+check before Save) — and saves into `config.yaml` in place with the comments
+kept. Status is derived from the files on disk plus `output/run_manifest.json`,
+which records the config and inputs each stage ran with, so a step is only
+"out of date" when something it depends on changed (and the page says what).
+The page updates itself the moment a file changes (file watcher → server-sent
+events), shows live log / progress / ETA / cancel for the running command and
+a toast when it finishes; `check` and `report` may run beside a long stage.
+
+Results: sortable, filterable tables with a column chooser and CSV export; a
+booster × sustainer **matrix**; a **trade-space** scatter (apogee against Mach
+at separation, velocity at ignition, coast, …); a **shortlist** (★ on any
+design) compared side by side with the flights overlaid and sent to RASAero
+together (`rpa confirm --designs …`); interactive versions of the report
+figures; a **Previous runs** diff against the snapshots in `output-archive/`
+(one is taken automatically before every fresh run). Clicking a design draws
+the vehicle (CDX1 geometry, motors to scale) with a staging timeline you can
+step through (space / ← → once the card has focus), and one button downloads
+the booster + sustainer combo it was flown with.
+
+The VM worker's state, the job queue (with discard / delete per job) and its
+console have their own page, with **Start VM worker / Stop worker** buttons
+that boot the UTM VM and start the worker inside it. **Runs & logs** keeps
+every command's full log (`output/gui_logs/`) and the result snapshots. The
+Optimize page shows the disk taken by histories, jobs and search rows with
+one-click cleanup. Deep links (`#results/designs?sel=…`) and Back work
+between pages and tabs; light/dark theme toggle in the header. Code in
+`rpa/gui/` (stdlib HTTP server + ES-module front end: `core.js`,
+`components.js`, `charts.js`, `player.js`, `pages/*.js`, `shell.js`).
+
+Visual check: `node tools/gui_shots.mjs shots/ --url http://127.0.0.1:8765/`
+screenshots every page in headless Chrome and fails on console errors
+(`--check` skips the PNGs); `RPA_BROWSER_TESTS=1 pytest` runs the same check
+against an empty project.
 
 ## Pipeline
 
@@ -114,11 +142,13 @@ python -m rpa <motors|mass|characterize|search|verify|report>   # one stage (out
   ```
 * **openrocket** – OpenRocket headless; different aero, preview only.
 
-1. **motors** – parse the `.eng` files, pick the max-impulse sustainer, stage
-   the motors into `output/motors/` (+ `all_motors.eng` for RASAero's *Select
+1. **motors** – parse the `.eng` files, stage every booster and sustainer
+   candidate into `output/motors/` (+ `all_motors.eng` for RASAero's *Select
    Motor File*).
-2. **mass** – SOP figures 7–10: sustainer-only and combined loaded weight / CG
-   for every booster, using OpenRocket 24.12 headless (`output/mass_table.csv`).
+2. **mass** – pick the sustainers to search (`sustainer_selection`, cached in
+   `output/sustainers_selected.json`), then SOP figures 7–10: sustainer-only
+   and combined loaded weight / CG for every (booster, sustainer) pair, using
+   OpenRocket 24.12 headless (`output/mass_table.csv`).
    The `.ork` supplies the mass *distribution* (dry-mass split between the
    stages, CGs, motor positions); the absolute dry mass comes from
    `mass_model.hardware_mass_lb` (default **180 lb** = the whole two-stage
@@ -185,7 +215,7 @@ continues when the files appear, so the pipeline is usable without the worker.
 config.yaml            all knobs (target, Mach limits, delays, launch site, paths, backend)
 rpa/                   pipeline package (python -m rpa ...)
   eng.py               RASP .eng parsing, impulse, nozzle exit diameter
-  motors.py            booster set + max-impulse sustainer selection
+  motors.py            booster set, sustainer candidates, spanning pick
   openrocket.py        OpenRocket 24.12 via JPype: mass/CG and preview simulation
   cdx1.py              RASAero CDX1 read/write (launch site, surface, SimulationList)
   massmodel.py         hardware-mass override on top of the OpenRocket mass distribution
@@ -201,7 +231,8 @@ rpa/                   pipeline package (python -m rpa ...)
   vmagent.py           UTM guest-agent primitives (utmctl push / pull / exec)
   pipeline.py, report.py, cli.py
   gui/                 local web GUI: server.py (HTTP API + SSE log), runner.py (subprocess runs),
-                       state.py (step status from the files on disk), vm.py (start/stop the worker
+                       state.py (step status from the files on disk), design.py (a design's motors,
+                       vehicle geometry and .eng downloads), vm.py (start/stop the worker
                        in the UTM VM), yamledit.py, static/ (page)
 Start GUI.command      double-click launcher for the GUI (macOS)
 worker/                pywinauto worker for the Windows VM (+ worker_config.json, run_worker.py launcher,

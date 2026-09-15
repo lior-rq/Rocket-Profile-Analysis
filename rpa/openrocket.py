@@ -37,7 +37,7 @@ class OpenRocket:
         self.jvm = Path(jvm) if jvm and Path(jvm).exists() else None
         self.core = None
         self._doc = None
-        self._motor_cache: dict[Path, object] = {}
+        self._motor_cache: dict[tuple, object] = {}
 
     # ---- lifecycle -----------------------------------------------------
     def __enter__(self):
@@ -102,16 +102,21 @@ class OpenRocket:
         return self.rocket
 
     def load_motor(self, eng: Motor | str | Path):
-        from java.io import File, FileInputStream
+        """A Motor is loaded from its own RASP block (it may come from a
+        multi-motor file); a path MUST hold exactly one motor."""
+        from java.io import ByteArrayInputStream
 
-        path = Path(eng.path if isinstance(eng, Motor) else eng)
-        if path in self._motor_cache:
-            return self._motor_cache[path]
-        builders = self.core.file.motor.GeneralMotorLoader().load(FileInputStream(File(str(path))), path.name)
+        if isinstance(eng, Motor):
+            key, text, name = (eng.path, eng.designation), eng.raw_text(), eng.path.name
+        else:
+            key, text, name = (Path(eng), None), Path(eng).read_text(), Path(eng).name
+        if key in self._motor_cache:
+            return self._motor_cache[key]
+        builders = self.core.file.motor.GeneralMotorLoader().load(ByteArrayInputStream(text.encode("utf-8")), name)
         if builders.size() != 1:
-            raise ValueError(f"{path}: expected one motor, found {builders.size()}")
+            raise ValueError(f"{key[0]}: expected one motor, found {builders.size()}")
         m = builders.get(0).build()
-        self._motor_cache[path] = m
+        self._motor_cache[key] = m
         return m
 
     def set_motors(self, sustainer: Motor, booster: Motor):
@@ -142,7 +147,7 @@ class OpenRocket:
         )
 
     def mass_row(self, sustainer: Motor, booster: Motor, hardware_mass_lb: float | None = None) -> MassRow:
-        return mass_row(booster.label, self.stage_masses(sustainer, booster), booster.prop_mass_kg, hardware_mass_lb)
+        return mass_row(booster.label, self.stage_masses(sustainer, booster), booster.prop_mass_kg, hardware_mass_lb, sustainer.label)
 
     def mass_table(self, sustainer: Motor, boosters: list[Motor], hardware_mass_lb: float | None = None) -> list[MassRow]:
         return [self.mass_row(sustainer, b, hardware_mass_lb) for b in boosters]

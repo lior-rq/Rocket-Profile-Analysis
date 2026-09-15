@@ -28,23 +28,54 @@ class MotorSet:
         except KeyError:
             raise KeyError(f"booster {label!r} is not in the current motor set") from None
 
+    def sustainer_by_label(self, label: str) -> Motor:
+        for m in self.sustainer_candidates:
+            if m.label == label:
+                return m
+        raise KeyError(f"sustainer {label!r} is not among the current sustainer candidates")
+
 
 def select_sustainer(cands: list[Motor]) -> Motor:
     """Highest total impulse wins; ties go to the lowest file index (first file)."""
     return max(cands, key=lambda m: (round(m.total_impulse_ns, 1), -(m.index or 0)))
 
 
-def load_motor_set(boosters, sustainers, ric=None) -> MotorSet:
+def pick_spanning(items: list, k: int) -> list:
+    """`k` entries of an already-sorted list that span it: both ends plus
+    evenly spaced picks between (k=1 -> the middle). Duplicates collapse, so
+    fewer than k come back when the list is short."""
+    n = len(items)
+    if n == 0 or k <= 0:
+        return []
+    if k == 1:
+        return [items[n // 2]]
+    idx = sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
+    return [items[i] for i in idx]
+
+
+def load_motor_set(boosters, sustainers, ric=None, exclude_boosters=(), exclude_sustainers=()) -> MotorSet:
     """`boosters` / `sustainers`: a folder, a file, or a list of folders and
     files (.eng with one or many motors, or openMotor .ric designs converted
-    through `ric`, see rpa.ric.RicConverter)."""
-    boosters = load_motors(boosters, ric)
-    sust_cands = load_motors(sustainers, ric)
-    names = [b.designation for b in boosters]
+    through `ric`, see rpa.ric.RicConverter). `exclude_*`: labels dropped
+    after loading (config.yaml paths.exclude_boosters / exclude_sustainers)."""
+    boosters = _without(load_motors(boosters, ric), exclude_boosters, "booster")
+    sust_cands = _without(load_motors(sustainers, ric), exclude_sustainers, "sustainer")
+    # every staged motor lands in one all_motors.eng; RASAero resolves by name
+    names = [m.designation for m in (*boosters, *sust_cands)]
     dupes = {n for n in names if names.count(n) > 1}
     if dupes:
-        raise ValueError(f"duplicate booster designations (RASAero needs unique names): {sorted(dupes)}")
+        raise ValueError(f"duplicate motor designations (RASAero needs unique names): {sorted(dupes)}")
     return MotorSet(boosters=boosters, sustainer=select_sustainer(sust_cands), sustainer_candidates=sust_cands)
+
+
+def _without(motors: list[Motor], exclude, what: str) -> list[Motor]:
+    ex = set(exclude or ())
+    if not ex:
+        return motors
+    kept = [m for m in motors if m.label not in ex]
+    if not kept:
+        raise ValueError(f"every {what} is excluded (paths.exclude_{what}s)")
+    return kept
 
 
 def motor_table(motors: list[Motor]) -> pd.DataFrame:
@@ -67,16 +98,23 @@ def motor_table(motors: list[Motor]) -> pd.DataFrame:
     )
 
 
+def staged_motors(ms: MotorSet) -> list[Motor]:
+    """Every motor RASAero may be asked to fly: all boosters and every
+    sustainer candidate (which sustainers are searched is decided later,
+    see rpa.pipeline.Pipeline.sustainers)."""
+    return [*ms.boosters, *ms.sustainer_candidates]
+
+
 def stage_motor_files(ms: MotorSet, out_dir) -> tuple[Path, Path]:
-    """Copy the booster files + chosen sustainer into out_dir and also write a
-    combined multi-motor file. Returns (directory, combined_file)."""
+    """Copy the motor files into out_dir and also write a combined
+    multi-motor file. Returns (directory, combined_file)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.eng"):
         old.unlink()
-    for src in dict.fromkeys(m.path for m in [*ms.boosters, ms.sustainer]):  # a multi-motor file is copied once
+    for src in dict.fromkeys(m.path for m in staged_motors(ms)):  # a multi-motor file is copied once
         shutil.copy2(src, out_dir / src.name)
-    combined = write_combined_eng([*ms.boosters, ms.sustainer], out_dir / "all_motors.eng")
+    combined = write_combined_eng(staged_motors(ms), out_dir / "all_motors.eng")
     (out_dir / "manifest.json").write_text(json.dumps(motor_manifest(ms), indent=1))
     return out_dir, combined
 
@@ -84,7 +122,7 @@ def stage_motor_files(ms: MotorSet, out_dir) -> tuple[Path, Path]:
 def motor_manifest(ms: MotorSet) -> dict:
     """Fingerprint of the input motor set, so stale staged files are detected
     when the user swaps a motor folder."""
-    return {str(p): [p.stat().st_size, int(p.stat().st_mtime)] for p in dict.fromkeys(m.path for m in [*ms.boosters, ms.sustainer])}
+    return {str(p): [p.stat().st_size, int(p.stat().st_mtime)] for p in dict.fromkeys(m.path for m in staged_motors(ms))}
 
 
 def staged_motors_current(ms: MotorSet, out_dir) -> bool:

@@ -35,7 +35,7 @@ class VMControl:
     def __init__(self, cfg: dict | None, root: Path, log=print, transport: str = "share"):
         c = dict(DEFAULTS)
         c.update({k: v for k, v in (cfg or {}).items() if v is not None})
-        # the guest agent mangles quotes on the command line, so nothing we pass may contain spaces
+        # the guest agent mangles quotes on the command line: no spaces allowed
         c["task_name"] = "".join(ch for ch in str(c["task_name"]) if ch.isalnum() or ch in "_-") or "RPAWorker"
         self.cfg = c
         self.root = Path(root)
@@ -120,6 +120,9 @@ class VMControl:
         log = self.agent.pull(f"{root}\\worker\\console.log", timeout=30)
         if log:
             (dest_dir / "console.log").write_bytes(log)
+        status = self.agent.pull(f"{root}\\worker\\worker_status.json", timeout=15)
+        if status:
+            (dest_dir / "worker_status.json").write_bytes(status)
         return ok
 
     # ---- orchestration ---------------------------------------------------------
@@ -238,4 +241,5 @@ class VMControl:
             op = dict(self.op)
         if op["running"] and op["started"]:
             op["elapsed_s"] = round(time.time() - op["started"], 1)
-        return {"available": self.available, "utmctl": self.utmctl, "name": self.cfg["name"], "status": self.vm_status() if self.available else None, "transport": self.transport, "op": op}
+        # utmctl status is a subprocess (~100 ms): fine every 20 s for a status pill
+        return {"available": self.available, "utmctl": self.utmctl, "name": self.cfg["name"], "status": self.vm_status(20.0) if self.available else None, "transport": self.transport, "op": op}

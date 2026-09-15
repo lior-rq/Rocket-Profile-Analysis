@@ -131,7 +131,7 @@ def run_once(args: list[str], hashes: dict[str, str]) -> int:
     watcher = threading.Thread(target=watch_for_changes, args=(hashes, stop), daemon=True)
     watcher.start()
     for line in proc.stdout:
-        # every line goes out at once: a batched line would sit unseen until the next one arrives
+        # forward every line at once: batching would delay it until the next arrives
         log_line(line)
     code = proc.wait()
     stop.set()

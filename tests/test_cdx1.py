@@ -8,7 +8,7 @@ TEMPLATE = ROOT / "input/RASAero (.CDX1)/RAS_v1.3.CDX1"
 
 
 def row(ign, sep=1.0):
-    return SimRow("01-x", "supersonic", sep, ign, "S  (M)", "B  (M)", 54.5, 75.7, 2.39, 124.0, 115.5, 3.88)
+    return SimRow("01-x", "supersonic", sep, ign, "S  (M)", "B  (M)", 54.5, 75.7, 2.39, 124.0, 115.5, 3.88, "S")
 
 
 def test_launch_site_read():

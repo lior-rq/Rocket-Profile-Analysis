@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .. import manifest
 from ..config import load_config
 from ..eng import expand_motor_sources, parse_eng
 from ..motors import load_motor_set
@@ -35,9 +36,8 @@ TABLES = {
     "boosters": "boosters.csv",
     "sustainers": "sustainers.csv",
     "mass_table": "mass_table.csv",
-    "search_rows": "search_rows.csv",
     "validation": "validation/validation.csv",
-}
+}  # search_rows.csv is deliberately absent: tens of MB, nothing shows it
 
 
 def file_info(p: Path, root: Path | None = None) -> dict:
@@ -59,10 +59,14 @@ def ago_text(seconds: float) -> str:
 
 
 def _rel(p: Path, root: Path) -> str:
-    try:
-        return str(Path(p).resolve().relative_to(Path(root).resolve()))
-    except ValueError:
-        return str(p)
+    """Path relative to the project root; the unresolved form first so a
+    symlinked input/ still maps to 'input/...'."""
+    for a, b in ((Path(p), Path(root)), (Path(p).resolve(), Path(root).resolve())):
+        try:
+            return str(a.relative_to(b))
+        except ValueError:
+            continue
+    return str(p)
 
 
 def _mtime(p: Path) -> float | None:
@@ -151,11 +155,11 @@ class StateCollector:
     def motor_set(self, cfg):
         bf, _ = self.motor_files(cfg, "boosters")
         sf, _ = self.motor_files(cfg, "sustainers")
-        key = tuple((str(f), _mtime(f)) for f in bf), tuple((str(f), _mtime(f)) for f in sf)
+        key = tuple((str(f), _mtime(f)) for f in bf), tuple((str(f), _mtime(f)) for f in sf), tuple(sorted(cfg.excluded("boosters"))), tuple(sorted(cfg.excluded("sustainers")))
         if key != self._ms_key:
             self._ms_key = key
             try:
-                self._ms = load_motor_set(cfg.motor_sources("boosters"), cfg.motor_sources("sustainers"), ric=self.ric_converter(cfg))
+                self._ms = load_motor_set(cfg.motor_sources("boosters"), cfg.motor_sources("sustainers"), ric=self.ric_converter(cfg), exclude_boosters=cfg.excluded("boosters"), exclude_sustainers=cfg.excluded("sustainers"))
                 self._ms_error = None
             except Exception as e:
                 self._ms = None
@@ -166,14 +170,18 @@ class StateCollector:
         inp = self.root / "input"
         orks = sorted(str(p.relative_to(self.root)) for p in inp.rglob("*.ork")) if inp.exists() else []
         cdx = sorted(str(p.relative_to(self.root)) for p in inp.rglob("*") if p.suffix.lower() == ".cdx1") if inp.exists() else []
+        cfg = self.config()
+        # per-case motor copies and staged outputs are not candidate sources
+        skip_dirs = [cfg.path("reference_dir").resolve(), cfg.output_dir.resolve()]
         folders: dict[str, list] = {}
         if inp.exists():
             for p in sorted(list(inp.rglob("*.eng")) + list(inp.rglob("*.ric"))):
-                if any(part.startswith(".") for part in p.relative_to(self.root).parts):
+                rp = p.resolve()
+                if any(part.startswith(".") for part in p.relative_to(self.root).parts) or any(d == rp.parent or d in rp.parents for d in skip_dirs):
                     continue
                 folders.setdefault(str(p.parent.relative_to(self.root)), []).append(p)
         motor_dirs = []
-        conv = self.ric_converter(self.config())
+        conv = self.ric_converter(cfg)
         for d, files in sorted(folders.items()):
             entries = []
             for f in sorted(files):
@@ -199,12 +207,13 @@ class StateCollector:
         s_files, s_problems = self.motor_files(cfg, "sustainers")
         motor_files = b_files + s_files
         inputs_mtime = _newest([root / "config.yaml", ork, cdx1, *motor_files]) or 0.0
-        site, ref_dia, cdx_err = None, None, None
+        site, site_cdx1, ref_dia, cdx_err = None, None, None, None
         try:
             from .. import cdx1 as C
 
             tree = C.load(cdx1)
-            site = C.launch_site(tree)
+            site_cdx1 = C.launch_site(tree)
+            site = dict(site_cdx1)
             site.update({k: v for k, v in cfg["launch_site"].items() if v is not None})
             ref_dia = float(cfg["python_sim"].get("ref_diameter_in") or C.reference_diameter_in(tree))
         except Exception as e:
@@ -221,6 +230,7 @@ class StateCollector:
                 "sustainer": {"label": ms.sustainer.label, "designation": ms.sustainer.designation, "total_impulse_ns": round(ms.sustainer.total_impulse_ns, 1), "burn_time_s": round(ms.sustainer.burn_time_s, 3), "nozzle_exit_in": ms.sustainer.nozzle_exit_in, "avg_thrust_n": round(ms.sustainer.avg_thrust_n, 1), "prop_mass_kg": ms.sustainer.prop_mass_kg},
                 "n_sustainer_candidates": len(ms.sustainer_candidates),
                 "sustainer_impulse_ns": [min(m.total_impulse_ns for m in ms.sustainer_candidates), max(m.total_impulse_ns for m in ms.sustainer_candidates)],
+                "sustainer_selection": self._sustainer_selection(cfg),
             }
         last_check = runner.last_run("check")
         problems = []
@@ -238,9 +248,14 @@ class StateCollector:
             problems.append(f"CDX1: {cdx_err}")
         if motors and motors["boosters_missing_nozzle"] and not cfg["rasaero"]["booster_nozzle_in"]:
             problems.append(f"{len(motors['boosters_missing_nozzle'])} booster .eng file(s) without a nozzle exit diameter comment")
+        man = manifest.read(cfg)
+        if last_check is None and man.get("check"):  # `rpa check` from a terminal
+            c = man["check"]
+            last_check = {"stage": "check", "args": [], "started": c["finished"], "finished": c["finished"], "elapsed_s": 0, "exit_code": 1 if c.get("problems") else 0, "cancelled": False, "error_lines": 0, "source": "cli"}
+        check_stale, check_changes = self._stale_since(man, "check", cfg, last_check["finished"] if last_check else None, inputs_mtime)
         if problems:
             inputs_status = "error"
-        elif last_check and last_check["finished"] and last_check["finished"] >= inputs_mtime:
+        elif last_check and last_check["finished"] and not check_stale:
             inputs_status = "ok" if last_check["exit_code"] == 0 else "warn"
         else:
             inputs_status = "unchecked"
@@ -253,16 +268,17 @@ class StateCollector:
             "sustainers": {"sources": [_rel(p, root) for p in cfg.motor_sources("sustainers")], "n": len(ms.sustainer_candidates) if ms is not None else len(s_files), "n_files": len(s_files), "problems": s_problems},
             "motors": motors,
             "site": site,
+            "site_cdx1": site_cdx1,
             "ref_diameter_in": ref_dia,
             "last_check": last_check,
+            "changes": check_changes,
             "inputs_mtime": inputs_mtime,
             "openrocket_jar": file_info(cfg.path("openrocket_jar")),
         }
 
         # mass model ----------------------------------------------------------
         mm = cfg["mass_model"]
-        hw = mm.get("hardware_mass_lb")
-        hw = None if hw in (None, "", "null") else float(hw)
+        hw = cfg.hardware_mass_lb()
         mass = {"method": mm.get("method", "openrocket"), "hardware_mass_lb": hw, "table": None, "estimate": None}
         if ms is not None:
             sp = ms.sustainer.prop_mass_kg * 2.20462262
@@ -305,17 +321,20 @@ class StateCollector:
         extra = [file_info(p, root) for p in sorted(aero_dir.glob("*.csv")) if p.name not in planned] if aero_dir.exists() else []
         n_have = sum(r["exists"] for r in plan_rows)
         aero_mtime = _newest([aero_dir / r["name"] for r in plan_rows if r["exists"]] + [aero_dir / e["name"] for e in extra])
-        # the tables present may cover the motor set even when the planned nozzle points differ (motor set swapped)
+        # tables can cover the motor set even if planned nozzle points differ
         coverage, covered = [], False
         if ms is not None and (n_have or extra):
             try:
                 from ..aero import STACK, SUSTAINER, AeroSet
 
                 aset = AeroSet.load(aero_dir)
+                # the same check as Pipeline.check: min / max nozzle of each set
                 nozs = [b.nozzle_exit_in for b in ms.boosters if b.nozzle_exit_in]
                 for noz in (min(nozs), max(nozs)) if nozs else (None,):
                     coverage += aset.coverage_problems(STACK, noz, 2.5, 50000.0)
-                coverage += aset.coverage_problems(SUSTAINER, ms.sustainer.nozzle_exit_in, 3.0, 50000.0)
+                snozs = [m.nozzle_exit_in for m in ms.sustainer_candidates if m.nozzle_exit_in]
+                for noz in (min(snozs), max(snozs)) if snozs else (None,):
+                    coverage += aset.coverage_problems(SUSTAINER, noz, 3.0, 50000.0)
                 covered = not coverage
             except Exception as e:
                 coverage = [f"{type(e).__name__}: {e}"]
@@ -346,7 +365,7 @@ class StateCollector:
                 try:
                     d = json.loads(js.read_text())
                     row = d.get("row", {})
-                    cases.append({"name": js.stem, "booster": row.get("booster"), "sep_delay_s": row.get("sep_delay_s"), "ign_delay_s": row.get("ign_delay_s"), "apogee_ft": row.get("max_alt_ft"), "max_vel_fps": row.get("max_vel_fps"), "mtime": _mtime(csv), "site": d.get("site")})
+                    cases.append({"name": js.stem, "booster": row.get("booster"), "sustainer": row.get("sustainer"), "sep_delay_s": row.get("sep_delay_s"), "ign_delay_s": row.get("ign_delay_s"), "apogee_ft": row.get("max_alt_ft"), "max_vel_fps": row.get("max_vel_fps"), "mtime": _mtime(csv), "site": d.get("site")})
                 except (OSError, ValueError):
                     cases.append({"name": js.stem, "error": "unreadable"})
         cal = file_info(ref_dir / "density_calibration.csv", root)
@@ -396,26 +415,31 @@ class StateCollector:
         # optimize ------------------------------------------------------------
         substages = []
         opt_stale = False
+        opt_changes: list[str] = []
         for name, files in RUN_SUBSTAGES:
             infos = [file_info(out / f, root) for f in files]
             done = all(i["exists"] for i in infos)
             mt = min((i["mtime"] for i in infos if i["exists"]), default=None)
-            stale = bool(done and mt is not None and mt < inputs_mtime)
+            stale, changes = self._stale_since(man, name, cfg, mt, inputs_mtime)
+            stale = bool(done and stale)
             if name == "verify" and done:
-                # verify only exports solved designs: with none solved there is nothing to verify
+                # verify only exports solved designs; nothing to verify if none solved
                 try:
                     ddf = pd.read_csv(out / "designs.csv")
                     done = ("verified_ok" in ddf.columns and ddf["verified_ok"].notna().any()) or not (ddf["status"] == "solved").any()
                 except Exception:
                     done = False
             opt_stale = opt_stale or stale
-            substages.append({"name": name, "done": done, "mtime": mt, "stale": stale, "files": infos})
+            if stale:
+                opt_changes += [c for c in changes if c not in opt_changes]
+            substages.append({"name": name, "done": done, "mtime": mt, "stale": stale, "changes": changes if stale else [], "files": infos})
         designs_summary = self._designs_summary(out, cfg)
         n_done = sum(s["done"] for s in substages)
         optimize = {
             "status": "ok" if n_done == len(substages) and not opt_stale else "stale" if opt_stale and n_done else "partial" if n_done else "todo",
             "substages": substages,
             "stale": opt_stale,
+            "changes": opt_changes,
             "designs": designs_summary,
             "last_run": runner.last_run("run"),
             "backend": cfg["backend"],
@@ -433,8 +457,8 @@ class StateCollector:
         c_stale = bool(cinfo["exists"] and designs_summary.get("mtime") and cinfo["mtime"] < designs_summary["mtime"])
         confirm = {"status": ("stale" if c_stale else "ok") if crows else "todo", "file": cinfo, "rows": crows, "stale": c_stale, "last_run": runner.last_run("confirm")}
 
-        # worker / jobs -------------------------------------------------------
-        worker = self.worker_status(cfg, vm)
+        # worker / jobs (trimmed: the worker page fetches /api/worker) -----------
+        worker = self.worker_status(cfg, vm, n_jobs=20, n_tail=20)
 
         return {
             "now": time.time(),
@@ -453,6 +477,36 @@ class StateCollector:
             "history": runner.history[-30:],
             "plots": [file_info(out / p, root) for p in ["apogee_vs_delay.png", "boost_mach.png", "final_mach_vs_time.png"] if (out / p).exists()],
         }
+
+    @staticmethod
+    def _stale_since(man: dict, stage: str, cfg, output_mtime, inputs_mtime: float) -> tuple[bool, list[str]]:
+        """(stale, what changed) for a stage: the run manifest's config and
+        input snapshot when the stage wrote one, else the older mtime rule."""
+        entry = man.get(stage)
+        if entry and output_mtime is not None and output_mtime <= float(entry.get("finished", 0)) + 5:
+            changes = manifest.diff(entry, manifest.snapshot(cfg, stage))
+            return bool(changes), changes
+        stale = bool(output_mtime is not None and output_mtime < inputs_mtime)
+        return stale, (["inputs or config.yaml changed since this stage ran (no run manifest yet)"] if stale else [])
+
+    def _sustainer_selection(self, cfg) -> dict:
+        """config.yaml sustainer_selection + the cached pick (output/sustainers_selected.json), if any."""
+        sel = dict(cfg.get("sustainer_selection") or {})
+        info = {"mode": sel.get("mode", "best"), "count": sel.get("count", 5), "labels": sel.get("labels") or [], "selected": None}
+        p = cfg.output_dir / "sustainers_selected.json"
+        if p.exists():
+            try:
+                d = json.loads(p.read_text())
+                info["selected"] = d.get("motors") or []
+                info["reference_booster"] = d.get("reference_booster")
+                sweep = d.get("sweep") or []
+                if sweep:
+                    info["sweep_apogee_ft"] = [sweep[0]["apogee_ft"], sweep[-1]["apogee_ft"]]
+                info["stale"] = d.get("key", {}).get("mode") != info["mode"] or d.get("key", {}).get("count") != info["count"]
+                info["mtime"] = _mtime(p)
+            except (OSError, ValueError):
+                pass
+        return info
 
     def _designs_summary(self, out: Path, cfg) -> dict:
         p = out / "designs.csv"
@@ -490,10 +544,11 @@ class StateCollector:
             except Exception:
                 chars = None
         sust = None
-        sf = out / "selected_sustainer.json"
+        sf = out / "sustainers_selected.json"
         if sf.exists():
             try:
                 sust = json.loads(sf.read_text())
+                sust = {"mode": (sust.get("key") or {}).get("mode"), "motors": sust.get("motors") or [], "n_candidates": len((sust.get("key") or {}).get("candidates") or [])}
             except Exception:
                 sust = None
         return {
@@ -511,7 +566,15 @@ class StateCollector:
             "apogee_min_ft": float(df["apogee_ft"].min()) if "apogee_ft" in df and df["apogee_ft"].notna().any() else None,
             "apogee_max_ft": float(df["apogee_ft"].max()) if "apogee_ft" in df and df["apogee_ft"].notna().any() else None,
             "report": file_info(out / "report.md", self.root),
+            "shortlist": self._shortlist(out),
         }
+
+    @staticmethod
+    def _shortlist(out: Path) -> list[str]:
+        try:
+            return [str(k) for k in (json.loads((out / "shortlist.json").read_text()).get("keys") or [])]
+        except (OSError, ValueError, AttributeError):
+            return []
 
     # ---- change detection ----------------------------------------------------
     def signature(self) -> int:
@@ -570,7 +633,7 @@ class StateCollector:
     # ---- VM worker ----------------------------------------------------------
     _TS_RE = re.compile(r"^(?:(\d{4}-\d{2}-\d{2}) )?(\d{2}):(\d{2}):(\d{2}) (.*)$")
 
-    def worker_status(self, cfg, vm=None) -> dict:
+    def worker_status(self, cfg, vm=None, n_jobs: int = 60, n_tail: int = 60) -> dict:
         root = self.root
         log = root / "worker" / "console.log"
         tail: list[str] = []
@@ -598,20 +661,40 @@ class StateCollector:
                     version = int(m.group(1))
                     break
         jobs_dir = cfg.path("jobs_dir")
+        # the worker's own view: with the agent transport the claim marker
+        # lives on the VM's disk, so the job in progress comes from here
+        try:
+            ws = json.loads((root / "worker" / "worker_status.json").read_text())
+        except (OSError, ValueError, TypeError):
+            ws = {}
+        current = ws.get("job") if alive and isinstance(ws, dict) else None
+        transport = vm.transport if vm is not None else "share"
+        now = time.time()
         jobs = []
         if jobs_dir.exists():
             for d in sorted(jobs_dir.iterdir(), reverse=True)[:60]:
                 if not d.is_dir() or not re.match(r"^\d{4}-", d.name):
                     continue
-                jobs.append(self.job_info(d, brief=True))
+                j = self.job_info(d, brief=True)
+                age = now - (j["mtime"] or now)
+                if j["state"] == "queued":
+                    if j["name"] == current:
+                        j["state"] = "running"
+                    elif (transport == "agent" and not j["pushed"] and age > 120) or (alive and age > 600):
+                        j["state"] = "orphan"  # nobody will ever claim it
+                jobs.append(j)
         active = [j for j in jobs if j["state"] == "running"]
         queued = [j for j in jobs if j["state"] == "queued"]
-        now = time.time()
+        orphans = [j for j in jobs if j["state"] == "orphan"]
         oldest_queued_age = max((now - (j["mtime"] or now) for j in queued), default=0.0)
         vm_info = vm.snapshot() if vm is not None else None
         vm_state = vm_info["status"] if vm_info else None
+        current_job = None
+        if current:
+            started = ws.get("started")
+            current_job = {"name": current, "type": ws.get("type"), "started": started, "elapsed_s": round(now - float(started), 1) if started else None}
         if active:
-            state, detail = "busy", f"working on {active[0]['name']}"
+            state, detail = "busy", f"working on {active[0]['name']}" + (f" for {ago_text(current_job['elapsed_s'])[:-4]}" if current_job and current_job["elapsed_s"] is not None else "")
         elif queued and oldest_queued_age > 45 and not alive:
             state, detail = "unresponsive", f"{len(queued)} job(s) waiting {oldest_queued_age:.0f}s unclaimed and no heartbeat - the worker is not running"
         elif queued:
@@ -628,7 +711,7 @@ class StateCollector:
             state, detail = "online", f"activity {ago_text(now - last_seen)} (older launcher without heartbeat)"
         else:
             state, detail = "offline", ("no heartbeat - start the worker" if last_seen else "never started")
-        return {"state": state, "detail": detail, "last_seen": last_seen, "version": version, "heartbeat": hb, "alive": alive, "vm": vm_info, "console_tail": tail[-60:], "jobs": jobs, "n_queued": len(queued), "n_active": len(active), "jobs_dir": str(jobs_dir.relative_to(root)) if root in jobs_dir.parents else str(jobs_dir), "mode": cfg["worker"]["mode"]}
+        return {"state": state, "detail": detail, "last_seen": last_seen, "version": version, "heartbeat": hb, "alive": alive, "vm": vm_info, "transport": transport, "current_job": current_job, "console_tail": tail[-n_tail:], "jobs": jobs[:n_jobs], "n_jobs": len(jobs), "n_queued": len(queued), "n_active": len(active), "n_orphan": len(orphans), "jobs_dir": str(jobs_dir.relative_to(root)) if root in jobs_dir.parents else str(jobs_dir), "mode": cfg["worker"]["mode"]}
 
     def job_info(self, d: Path, brief: bool = False) -> dict:
         spec, done = {}, None
@@ -662,6 +745,7 @@ class StateCollector:
             "created": spec.get("created"),
             "state": state,
             "claimed_at": claimed_at,
+            "pushed": (d / "pushed").exists(),
             "done": done,
             "mtime": _mtime(d / "job.json"),
             "has_result": (d / spec.get("result_cdx1", "result.CDX1")).exists() if spec else False,

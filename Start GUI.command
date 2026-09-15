@@ -1,5 +1,5 @@
 #!/bin/bash
-# Double-click in Finder to open the Rocket Profile Analysis GUI. (Prefer the .app: `python -m rpa gui --make-app`.)
+# Double-click to open the GUI. Prefer the .app: `python -m rpa gui --make-app`.
 cd "$(dirname "$0")"
 if [ ! -x .venv/bin/python ]; then
   echo "No .venv yet - creating it (python3 -m venv .venv && pip install -r requirements.txt)"

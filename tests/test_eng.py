@@ -78,7 +78,7 @@ def test_multiple_sources_and_single_files(tmp_path):
     assert [p.name for p in got] == ["99-extra.eng", files[1].name, files[2].name]
     ms = load_motors([sub, files[1]])
     assert [m.label for m in ms] == ["99-extra", files[1].stem]
-    # a multi-motor file next to single files: ids come from the designations inside it
+    # multi-motor file next to single files: ids come from its designations
     multi = tmp_path / "many.eng"
     multi.write_text("".join(m.raw_text() for m in motors))
     ms = load_motors([multi, files[0]])

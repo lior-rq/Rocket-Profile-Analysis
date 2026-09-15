@@ -29,7 +29,7 @@ import yaml
 
 M_TO_IN = 39.3700787
 DEFAULT_TIMESTEP_S = 0.002  # what the files' own designations were produced with
-CURVE_POINTS = 1000  # RASAero copes with the full 0.002 s curve; thinning beyond this costs impulse (peak and burnout are always kept)
+CURVE_POINTS = 1000  # thinning below this costs impulse; peak and burnout are always kept
 MANUFACTURER = "openMotor"
 
 
@@ -111,7 +111,7 @@ def import_motorlib(openmotor_dir: Path):
     return motor_mod
 
 
-# ---- simulate + RASP block --------------------------------------------------------
+# ---- simulate + RASP block ----
 @dataclass
 class RicResult:
     designation: str
@@ -215,7 +215,7 @@ def rasp_block(r: RicResult, source: Path, timestep_s: float | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-# ---- the converter used by the motor loader ---------------------------------------
+# ---- the converter used by the motor loader ----
 class RicConverter:
     """`.ric` files -> cached one-motor `.eng` files (callable used by rpa.eng.load_motors)."""
 

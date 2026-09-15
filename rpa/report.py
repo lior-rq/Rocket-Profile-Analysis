@@ -24,13 +24,21 @@ def rank(designs: list[Design], cfg) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def write_report(out: Path, cfg, ranked: pd.DataFrame, chars: pd.DataFrame | None, elig: pd.DataFrame | None, sustainer: dict | None) -> Path:
+def write_report(out: Path, cfg, ranked: pd.DataFrame, chars: pd.DataFrame | None, elig: pd.DataFrame | None, sustainers: dict | None) -> Path:
+    """`sustainers` = output/sustainers_selected.json (mode, selected motors, sweep)."""
     t = cfg["target"]
     p = cfg["profiles"]
     lines = ["# Two-stage flight profile search", ""]
     lines.append(f"Target apogee **{t['apogee_ft']:.0f} ft** (±{t['tolerance_ft']:.0f} ft). Backend: `{cfg['backend']}`.")
-    if sustainer:
-        lines.append(f"Sustainer (max impulse): **{sustainer['label']}** ({sustainer['total_impulse_ns']:.0f} N·s).")
+    if sustainers:
+        mode = (sustainers.get("key") or {}).get("mode", "best")
+        motors = sustainers.get("motors") or []
+        n_cand = len((sustainers.get("key") or {}).get("candidates") or [])
+        lines.append(f"Sustainers searched ({mode}, {len(motors)} of {n_cand} candidates): " + ", ".join(f"**{m['label']}** ({m['total_impulse_ns']:.0f} N·s, {m['burn_time_s']:.1f} s burn)" for m in motors) + ".")
+        sweep = sustainers.get("sweep")
+        if sweep:
+            lo, hi = sweep[0], sweep[-1]
+            lines.append(f"Reference booster {sustainers.get('reference_booster')} under every candidate: {lo['apogee_ft']:.0f} ft ({lo['label']}) to {hi['apogee_ft']:.0f} ft ({hi['label']}).")
     mm = cfg.get("mass_model", {})
     if mm.get("method", "openrocket") == "openrocket":
         hw = mm.get("hardware_mass_lb")
@@ -49,13 +57,13 @@ def write_report(out: Path, cfg, ranked: pd.DataFrame, chars: pd.DataFrame | Non
         lines.append("")
         for prof in elig["profile"].unique():
             sub = elig[elig["profile"] == prof]
-            lines.append(f"- **{prof}**: {int(sub['eligible'].sum())} of {len(sub)} boosters eligible")
+            lines.append(f"- **{prof}**: {int(sub['eligible'].sum())} of {len(sub)} (booster, sustainer) pairs eligible")
         lines.append("")
     if chars is not None and not chars.empty:
         lines.append("## Boost-phase characterization (attached stack)")
         lines.append("")
         c = chars.copy()
-        cols = ["booster", "t_burnout_s", "max_mach_boost", "t_max_mach_s", "mach_burnout", "vel_burnout_fps", "alt_burnout_ft", "rail_exit_vel_fps", "t_below_supersonic_s", "t_below_subsonic_s", "events_consistent"]
+        cols = ["booster", "sustainer", "t_burnout_s", "max_mach_boost", "t_max_mach_s", "mach_burnout", "vel_burnout_fps", "alt_burnout_ft", "rail_exit_vel_fps", "t_below_supersonic_s", "t_below_subsonic_s", "events_consistent"]
         lines.append(c[[x for x in cols if x in c.columns]].to_markdown(index=False))
         lines.append("")
     lines.append("## Designs (ranked)")
@@ -63,7 +71,7 @@ def write_report(out: Path, cfg, ranked: pd.DataFrame, chars: pd.DataFrame | Non
     if ranked.empty:
         lines.append("_No eligible candidates - see eligibility above._")
     else:
-        cols = ["rank", "booster", "profile", "status", "sep_delay_s", "ign_delay_s", "apogee_ft", "mach_at_sep", "vel_at_ign_fps", "mach_at_ign", "alt_at_ign_ft", "max_mach", "max_accel_g", "rail_exit_vel_fps", "t_apogee_s", "apogee_min_delay_ft", "apogee_max_delay_ft", "verified_ok", "verify_note", "hint"]
+        cols = ["rank", "booster", "sustainer", "profile", "status", "sep_delay_s", "ign_delay_s", "apogee_ft", "mach_at_sep", "vel_at_ign_fps", "mach_at_ign", "alt_at_ign_ft", "max_mach", "max_accel_g", "rail_exit_vel_fps", "t_apogee_s", "apogee_min_delay_ft", "apogee_max_delay_ft", "verified_ok", "verify_note", "hint"]
         lines.append(ranked[[x for x in cols if x in ranked.columns]].to_markdown(index=False))
     lines.append("")
     lines.append("Status meanings: `solved` = an ignition delay hits the target within tolerance; `underpowered` = even the shortest coast falls short; "
@@ -91,12 +99,12 @@ def plots(out: Path, cfg, designs: list[Design], chars: pd.DataFrame | None, his
         fig, axes = plt.subplots(1, len(by_prof), figsize=(7 * len(by_prof), 5), squeeze=False)
         for ax, (prof, items) in zip(axes[0], by_prof.items(), strict=False):
             for d, s in items:
-                # samples are (ignition delay, apogee[, separation delay]); plot the chosen separation delay's curve
+                # samples: (ign delay, apogee[, sep delay]); plot the chosen sep delay only
                 pts = sorted((x[0], x[1]) for x in s if len(x) < 3 or abs(x[2] - d.sep_delay_s) < 1e-9)
                 if not pts:
                     continue
                 xs, ys = zip(*pts, strict=False)
-                ax.plot(xs, ys, marker="o", ms=3, lw=1, label=d.booster)
+                ax.plot(xs, ys, marker="o", ms=3, lw=1, label=f"{d.booster}+{d.sustainer}")
             ax.axhline(target, color="k", ls="--", lw=1)
             ax.set_title(f"{prof}: apogee vs sustainer ignition delay")
             ax.set_xlabel("sustainer ignition delay after separation [s]")
@@ -116,7 +124,10 @@ def plots(out: Path, cfg, designs: list[Design], chars: pd.DataFrame | None, his
         ax.axhline(cfg["profiles"]["subsonic_max_mach"], color="b", ls="--", lw=1, label="subsonic limit 0.9")
         ax.axhline(cfg["profiles"]["supersonic_min_mach"], color="r", ls="--", lw=1, label="supersonic floor 1.2")
         ax.set_xticks(list(x))
-        ax.set_xticklabels(chars["booster"], rotation=90, fontsize=6)
+        labels = chars["booster"].astype(str)
+        if "sustainer" in chars.columns and chars["sustainer"].astype(str).nunique() > 1:
+            labels = labels + "+" + chars["sustainer"].astype(str)
+        ax.set_xticklabels(labels, rotation=90, fontsize=6 if len(chars) <= 120 else 3)
         ax.set_ylabel("Mach")
         ax.legend(fontsize=8)
         ax.set_title("Attached-stack peak Mach per booster")

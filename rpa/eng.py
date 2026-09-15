@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-# Our optimizer writes "; Throat 1.860 in, exit 3.880 in." into the comment header.
+# our optimizer writes "; Throat 1.860 in, exit 3.880 in." into the header
 _NOZZLE_RE = re.compile(r"throat\s+([\d.]+)\s*in.*?exit\s+([\d.]+)\s*in", re.IGNORECASE)
 _INDEX_RE = re.compile(r"^(\d+)[-_]")
 _SUFFIX_RE = re.compile(r"-(\d+)$")
@@ -47,7 +47,7 @@ class Motor:
 
     @cached_property
     def total_impulse_ns(self) -> float:
-        # RASP convention: the curve starts at (0, 0) even if the first point is not listed.
+        # RASP convention: the curve starts at (0, 0) even if not listed
         t = np.concatenate([[0.0], self.time_s])
         f = np.concatenate([[0.0], self.thrust_n])
         return float(np.trapezoid(f, t))
@@ -208,11 +208,8 @@ def load_motor_dir(directory: str | Path) -> list[Motor]:
     return load_motors([directory])
 
 
-def write_combined_eng(motors: list[Motor], out_path: str | Path) -> Path:
-    """Concatenate motor files into one multi-motor RASP file (what RASAero's
-    'Select Motor File' expects when it wants a single file)."""
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+def combined_eng_text(motors: list[Motor]) -> str:
+    """Motor blocks concatenated into one multi-motor RASP file."""
     chunks = []
     for m in motors:
         text = m.raw_text().rstrip("\n")
@@ -221,5 +218,13 @@ def write_combined_eng(motors: list[Motor], out_path: str | Path) -> Path:
         while lines and lines[-1].strip() == ";":
             lines.pop()
         chunks.append("\n".join(lines))
-    out_path.write_text("\n".join(chunks) + "\n")
+    return "\n".join(chunks) + "\n"
+
+
+def write_combined_eng(motors: list[Motor], out_path: str | Path) -> Path:
+    """Concatenate motor files into one multi-motor RASP file (what RASAero's
+    'Select Motor File' expects when it wants a single file)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(combined_eng_text(motors))
     return out_path

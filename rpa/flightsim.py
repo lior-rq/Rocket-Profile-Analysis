@@ -41,7 +41,7 @@ from .eng import Motor
 
 N_TO_LBF = 0.2248089
 KG_TO_LB = 2.2046226
-MAX_TABLE_MACH = 8.0  # the CD grid stops here; the vehicle never gets near it (RASAero exports go to Mach 25)
+MAX_TABLE_MACH = 8.0  # CD grid cutoff; vehicle never gets near it (RASAero exports to Mach 25)
 
 
 def ref_area_ft2(diameter_in: float) -> float:

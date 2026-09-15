@@ -64,9 +64,10 @@ def _cg_of_difference(m_total: float, x_total: float, m_part: float, x_part: flo
     return (m_total * x_total - m_part * x_part) / m
 
 
-def mass_row(booster_label: str, sm: StageMasses, booster_prop_kg: float, hardware_mass_lb: float | None) -> MassRow:
-    """The RASAero row masses for one booster, with the dry mass optionally
-    forced to `hardware_mass_lb` (both stages scaled by the same factor)."""
+def mass_row(booster_label: str, sm: StageMasses, booster_prop_kg: float, hardware_mass_lb: float | None, sustainer_label: str) -> MassRow:
+    """The RASAero row masses for one (booster, sustainer) pair, with the dry
+    mass optionally forced to `hardware_mass_lb` (both stages scaled by the
+    same factor)."""
     f = 1.0 if hardware_mass_lb is None else float(hardware_mass_lb) / sm.stack_dry_lb
     s_dry, b_dry = f * sm.sustainer_dry_lb, f * sm.booster_dry_lb
     s_wt = s_dry + sm.sustainer_prop_lb
@@ -83,4 +84,5 @@ def mass_row(booster_label: str, sm: StageMasses, booster_prop_kg: float, hardwa
         sustainer_dry_lb=round(s_dry, 3),
         booster_dry_lb=round(b_dry, 3),
         hardware_mass_lb=None if hardware_mass_lb is None else float(hardware_mass_lb),
+        sustainer=sustainer_label,
     )

@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import cdx1, history as H
-from .jobs import EXPORT, RERUN_SAVE, JobClient
+from .jobs import EXPORT, EXPORT_BATCH, RERUN_SAVE, JobClient
 from .models import SimRow
 
 
@@ -26,6 +26,11 @@ class SimBackend:
     def export(self, row: SimRow, name: str) -> pd.DataFrame:
         """Full time history for one row (normalized columns, see history.py)."""
         raise NotImplementedError
+
+    def history(self, row: SimRow, name: str) -> pd.DataFrame:
+        """Like export() but nothing has to land on disk (characterization
+        runs hundreds of these); backends that can, skip the file."""
+        return self.export(row, name)
 
 
 class RASAeroBackend(SimBackend):
@@ -83,6 +88,22 @@ class RASAeroBackend(SimBackend):
                 if attempt == self.max_retries:
                     raise RuntimeError(f"{len(pending)} row(s) still have no result after {attempt + 1} attempts; first: {pending[0].tag}. If every row is empty RASAero probably did not find the motor names - check <Booster1Engine> strings vs the names RASAero shows.")
 
+    def _finish_export(self, name: str, export_csv: Path) -> pd.DataFrame:
+        """Read one flight's View Data export, detect/apply the altitude
+        reference offset (once, cached to disk) and keep a copy under
+        output/histories/. Shared by export() and export_batch()."""
+        h = H.read_rasaero_export(export_csv)
+        if self.alt_offset_ft is None:
+            a0 = float(h["altitude_ft"].iloc[0])
+            self.alt_offset_ft = a0 if a0 > 50.0 else 0.0
+            self._offset_file.write_text(json.dumps({"offset_ft": self.alt_offset_ft, "detected_from": name}))
+            self.log(f"  RASAero altitude reference: {'MSL (subtracting %.0f ft)' % a0 if self.alt_offset_ft else 'AGL'}")
+        if self.alt_offset_ft:
+            h["altitude_ft"] = h["altitude_ft"] - self.alt_offset_ft
+        keep = self.history_dir / (safe_name(name) + ".csv")
+        shutil.copy2(export_csv, keep)
+        return h
+
     def export(self, row: SimRow, name: str) -> pd.DataFrame:
         job = self.jobs.create(name, EXPORT, motor_file=self.motor_file, motor_dir=self.motor_dir, n_rows=1, export=True, time_base_s=float(self.cfg["rasaero"]["export_time_base_s"]))
         self._write([row], job.input_cdx1)
@@ -90,23 +111,44 @@ class RASAeroBackend(SimBackend):
         self.jobs.wait(job)
         if not job.export_csv.exists():
             raise RuntimeError(f"worker finished {job.dir.name} but {job.export_csv.name} is missing")
-        h = H.read_rasaero_export(job.export_csv)
-        if self.alt_offset_ft is None:
-            a0 = float(h["altitude_ft"].iloc[0])
-            self.alt_offset_ft = a0 if a0 > 50.0 else 0.0
-            self._offset_file.write_text(json.dumps({"offset_ft": self.alt_offset_ft, "detected_from": job.dir.name}))
-            self.log(f"  RASAero altitude reference: {'MSL (subtracting %.0f ft)' % a0 if self.alt_offset_ft else 'AGL'}")
-        if self.alt_offset_ft:
-            h["altitude_ft"] = h["altitude_ft"] - self.alt_offset_ft
+        h = self._finish_export(name, job.export_csv)
         problems = cdx1.merge_results([row], cdx1.read_results(job.result_cdx1)) if job.result_cdx1.exists() else ["no result.CDX1"]
         self._apply_offset([row] if not problems else [])
         if problems:
             # fall back to the history itself for the summary numbers
             row.max_alt_ft, row.t_apogee_s = H.apogee(h)
             row.max_vel_fps = float(h["velocity_fps"].max())
-        keep = self.history_dir / (safe_name(name) + ".csv")
-        shutil.copy2(job.export_csv, keep)
         return h
+
+    def export_batch(self, rows: list[SimRow], names: list[str]) -> list[pd.DataFrame | None]:
+        """All `rows` as one Flight Simulation batch (one Rerun All, one
+        RASAero session) with a per-row View Data export - one job's worth of
+        start/open/save overhead instead of one job per flight. Opt-in
+        (worker.batch_reference_export): a new worker job type, needs a live
+        check on the VM before it replaces the per-row path by default."""
+        csv_names = [f"row{i:02d}.csv" for i in range(len(rows))]
+        job = self.jobs.create("reference-batch", EXPORT_BATCH, motor_file=self.motor_file, motor_dir=self.motor_dir, n_rows=len(rows), time_base_s=float(self.cfg["rasaero"]["export_time_base_s"]), extra={"export_csvs": csv_names})
+        self._write(rows, job.input_cdx1)
+        self.jobs.submit(job)
+        self.jobs.wait(job)
+        problems = cdx1.merge_results(rows, cdx1.read_results(job.result_cdx1)) if job.result_cdx1.exists() else [f"row {i}: no result.CDX1" for i in range(len(rows))]
+        if problems:
+            self.log(f"  {len(problems)} problem(s) in {job.dir.name}: " + "; ".join(problems[:3]) + (" ..." if len(problems) > 3 else ""))
+        # histories first: the first export detects the altitude offset
+        histories: list[pd.DataFrame | None] = []
+        for name, csv_name in zip(names, csv_names, strict=True):
+            src = job.dir / csv_name
+            if not src.exists():
+                self.log(f"  {name}: no export - RASAero may not have recognised the motor names")
+                histories.append(None)
+                continue
+            histories.append(self._finish_export(name, src))
+        self._apply_offset([r for r in rows if r.max_alt_ft is not None])
+        for row, h in zip(rows, histories, strict=True):
+            if h is not None and row.max_alt_ft is None:  # result.CDX1 entry did not merge cleanly
+                row.max_alt_ft, row.t_apogee_s = H.apogee(h)
+                row.max_vel_fps = float(h["velocity_fps"].max())
+        return histories
 
 
 class OpenRocketBackend(SimBackend):
@@ -131,7 +173,7 @@ class OpenRocketBackend(SimBackend):
                 self.site[k] = v
 
     def _sim(self, row: SimRow):
-        s, h = self.orr.simulate(self.ms.sustainer, self.ms.booster(row.booster), row.sep_delay_s, row.ign_delay_s, self.site)
+        s, h = self.orr.simulate(self.ms.sustainer_by_label(row.sustainer), self.ms.booster(row.booster), row.sep_delay_s, row.ign_delay_s, self.site)
         row.max_alt_ft = round(s["max_alt_ft"], 1)
         row.max_vel_fps = round(s["max_vel_fps"], 1)
         row.t_apogee_s = round(s["t_apogee_s"], 2)
@@ -150,7 +192,7 @@ class OpenRocketBackend(SimBackend):
         return h
 
 
-# ---- process-pool workers for PythonBackend.run_batch (module level: picklable by name) ----
+# ---- run_batch pool workers (module level: must pickle by name) ----
 _POOL_BACKEND = None
 
 
@@ -206,7 +248,7 @@ class PythonBackend(SimBackend):
     def vehicle(self, row: SimRow):
         from .flightsim import Vehicle
 
-        return Vehicle(self.ms.booster(row.booster), self.ms.sustainer, row.combined_wt_lb, row.sustainer_wt_lb, self.ref_diameter_in, row.booster_nozzle_in, row.sustainer_nozzle_in)
+        return Vehicle(self.ms.booster(row.booster), self.ms.sustainer_by_label(row.sustainer), row.combined_wt_lb, row.sustainer_wt_lb, self.ref_diameter_in, row.booster_nozzle_in, row.sustainer_nozzle_in)
 
     def _sim(self, row: SimRow, history: bool = True):
         s, h = self.sim.run(self.vehicle(row), row.sep_delay_s, row.ign_delay_s, history=history)
@@ -254,7 +296,7 @@ class PythonBackend(SimBackend):
         done = 0
         every = max(1, n // 10)
         next_mark = every
-        # generous ceiling: a flight is ~0.05 s, a cold pool start ~10 s; a stuck pool falls back to serial
+        # generous: flight ~0.05s, cold start ~10s; a stuck pool falls back to serial
         for fut in as_completed(futures, timeout=120.0 + 2.0 * n / self.workers):
             rows_chunk = futures[fut]
             for r, (alt, vel, t_ap) in zip(rows_chunk, fut.result(), strict=True):
@@ -270,6 +312,10 @@ class PythonBackend(SimBackend):
         h.to_csv(self.history_dir / (safe_name(name) + ".csv"), index=False)
         return h
 
+    def history(self, row: SimRow, name: str) -> pd.DataFrame:
+        return self._sim(row)
+
 
 def safe_name(s: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_." else "_" for c in s)
+    """History file stem; '+' joins a booster and a sustainer label."""
+    return "".join(c if c.isalnum() or c in "-_.+" else "_" for c in s)

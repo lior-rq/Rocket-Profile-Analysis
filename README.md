@@ -1,263 +1,228 @@
 # Rocket Profile Analysis
 
-Automates the IREC Propulsion *Flight Sim S.O.P. for Two-Stage Rockets*
-(OpenRocket + RASAero II) and turns it into a search: which booster motor and
-which staging delays reach a **target apogee** while keeping booster separation
-**out of the transonic region**.
+Two-stage flight profile optimizer built on OpenRocket and RASAero II. Given a
+vehicle and a set of candidate motors it searches booster motor, separation
+delay and sustainer ignition delay for combinations that reach a target apogee
+while the booster separates outside the transonic band.
 
-## What it decides
+## Inputs
 
-Inputs: one OpenRocket model (`.ork`), one RASAero model (`.CDX1`), and the
-candidate booster motors and sustainer motors — each given as any mix of
-folders and files (`paths.boosters` / `paths.sustainers` in `config.yaml`,
-or ticked in the GUI's motor picker): one-motor RASP `.eng` files, a
-multi-motor `.eng` holding many motors, or openMotor `.ric` designs (each
-simulated once with openMotor's `motorlib` and cached, see `rpa/ric.py` and
-the `ric:` section of `config.yaml`). Which sustainer candidates are flown
-is `sustainer_selection` in `config.yaml`: `best` (the max-impulse one only),
-`span` (a few - `count` - chosen by flying one reference booster under every
-candidate and keeping the lowest, highest and evenly spaced apogees; the
-sustainers here differ by ~2 % in impulse but their burn time moves apogee by
-several percent, in a direction that depends on the coast) or `list`. The
-search space is
+* one OpenRocket model (`.ork`) – mass distribution and CGs
+* one RASAero model (`.CDX1`) – geometry, launch site, and the simulation
+  rows RASAero runs
+* booster and sustainer motor files: one-motor RASP `.eng`, multi-motor
+  `.eng` (every motor inside counts), or openMotor `.ric` designs (simulated
+  once with `motorlib` and cached)
 
-    booster (90) x sustainer (1-5) x profile type x separation delay x sustainer ignition delay
+On the GUI's Inputs page, drop files or folders onto the motor cards / model
+fields or press Upload; copies land in `input/boosters/`, `input/sustainers/`
+and `input/models/` (git-ignored). Files elsewhere on disk can be used in
+place (Browse… or a pasted path), or set `paths:` in `config.yaml`. Paths
+inside the project are stored relative to it.
 
-Two profile types are designed:
+Which sustainers fly with each booster is `sustainer_selection`: `best`
+(max impulse only), `span` (a few spread over the apogee they give one
+reference booster) or `list`.
 
-| profile      | rule                                                                          |
-|--------------|-------------------------------------------------------------------------------|
-| `subsonic`   | the attached stack never exceeds Mach 0.9 during boost/coast; separation is then free of the transonic band |
-| `supersonic` | the stack exceeds Mach 1.2 and the booster separates while still above Mach 1.2 |
+## Profiles
 
-A design margin (`profiles.mach_margin`, default 0.05) is applied to both
-limits. An optional third variant, `decel_subsonic` (`--decel-subsonic`), lets a
-supersonic booster coast *attached* back below Mach 0.9 and separate subsonic;
-it is off by default because it is not one of the two requested profiles (the
-attached stack crosses the transonic band twice).
+| profile      | rule                                                                 |
+|--------------|----------------------------------------------------------------------|
+| `subsonic`   | the attached stack never exceeds Mach 0.9; separation is free of the transonic band |
+| `supersonic` | the stack exceeds Mach 1.2 and separates while still above Mach 1.2   |
 
-Delays follow RASAero's convention (verified from its exports):
-`Booster1SeparationDelay` is measured from booster burnout and
-`SustainerIgnitionDelay` from separation. The tool re-checks this from every
-exported time history and flags it if the observed events disagree.
+`profiles.mach_margin` (default 0.05) is applied to both limits. A third
+variant, `decel_subsonic` (`--decel-subsonic`, off by default), lets a
+supersonic booster coast attached back below Mach 0.9 before separating.
+
+Delays follow RASAero's convention: `Booster1SeparationDelay` counts from
+booster burnout, `SustainerIgnitionDelay` from separation. Both floors are 0,
+so ignition can never precede burnout. Every exported time history is
+re-checked against this and a mismatch is flagged.
 
 ## GUI
 
 ```
-python -m rpa gui                 # or double-click "Rocket Profile Analysis.app" / "Start GUI.command"
+python -m rpa gui      # dev: service + browser. Desktop app: see docs/INSTALL.md
 ```
 
-opens `http://127.0.0.1:8765` (local only, no extra dependencies). Seven
-step pages in workflow order, each with the same shape: a one-line summary,
-an action panel (prerequisites as ✓/✗ chips, the Run button and its options,
-the equivalent command line), the step's data, a collapsed "how this step
-works", and previous/next buttons. Step 1 has four tabs — *Vehicle & site*,
-*Motors* (a checkbox tree of every `.eng` under `input/`; inside a
-multi-motor file single motors can be switched off, `paths.exclude_*`),
-*Mass* and *Target & rules* (with the effective delay grids and a validity
-check before Save) — and saves into `config.yaml` in place with the comments
-kept. Status is derived from the files on disk plus `output/run_manifest.json`,
-which records the config and inputs each stage ran with, so a step is only
-"out of date" when something it depends on changed (and the page says what).
-The page updates itself the moment a file changes (file watcher → server-sent
-events), shows live log / progress / ETA / cancel for the running command and
-a toast when it finishes; `check` and `report` may run beside a long stage.
+Opens `http://127.0.0.1:8765` (FastAPI + uvicorn, local only). Seven step pages in workflow order: each has a summary, an
+action panel (prerequisites, Run button, equivalent command line), the step's
+data and a collapsed "how this step works". Step 1 edits `config.yaml` in
+place with its comments kept. Status comes from the files on disk plus
+`output/run_manifest.json`, so a step is only "out of date" when something
+it depends on changed. A file watcher pushes changes to the page; the running
+command shows live log, progress and cancel.
 
-Results: sortable, filterable tables with a column chooser and CSV export; a
-booster × sustainer **matrix**; a **trade-space** scatter (apogee against Mach
-at separation, velocity at ignition, coast, …); a **shortlist** (★ on any
-design) compared side by side with the flights overlaid and sent to RASAero
-together (`rpa confirm --designs …`); interactive versions of the report
-figures; a **Previous runs** diff against the snapshots in `output-archive/`
-(one is taken automatically before every fresh run). Clicking a design draws
-the vehicle (CDX1 geometry, motors to scale) with a staging timeline you can
-step through (space / ← → once the card has focus), and one button downloads
-the booster + sustainer combo it was flown with.
+Results: sortable, filterable tables with CSV export; a booster × sustainer
+matrix; a trade-space scatter; a shortlist (★) compared side by side and sent
+to RASAero together (`rpa confirm --designs …`); interactive report figures;
+diffs against earlier runs (`output-archive/`, snapshotted before every fresh
+run). Clicking a design draws the vehicle with a staging timeline and offers
+the motor combo as a download.
 
-The VM worker's state, the job queue (with discard / delete per job) and its
-console have their own page, with **Start VM worker / Stop worker** buttons
-that boot the UTM VM and start the worker inside it. **Runs & logs** keeps
-every command's full log (`output/gui_logs/`) and the result snapshots. The
-Optimize page shows the disk taken by histories, jobs and search rows with
-one-click cleanup. Deep links (`#results/designs?sel=…`) and Back work
-between pages and tabs; light/dark theme toggle in the header. Code in
-`rpa/gui/` (stdlib HTTP server + ES-module front end: `core.js`,
-`components.js`, `charts.js`, `player.js`, `pages/*.js`, `shell.js`).
+The VM worker, its job queue and console have their own page with Start /
+Stop buttons. Runs & logs keeps every command's full log
+(`output/gui_logs/`). Code: `rpa/service/` (FastAPI app, in-process
+runner), `app/` (React front end + Tauri shell), `rpa/gui/` (state, design
+assets, VM control, yaml edits).
 
-Visual check: `node tools/gui_shots.mjs shots/ --url http://127.0.0.1:8765/`
-screenshots every page in headless Chrome and fails on console errors
-(`--check` skips the PNGs); `RPA_BROWSER_TESTS=1 pytest` runs the same check
-against an empty project.
+Visual check: `cd app && npx playwright test` runs the smoke suite against a
+service on port 8799 (`app/playwright.config.ts`).
 
 ## Pipeline
 
 ```
-python -m rpa check               # validate the input set (motors, CDX1, aero tables, reference cases)
-python -m rpa run                 # everything, python backend (RASAero aero tables + rpa.flightsim, Mac only)
-python -m rpa run --backend rasaero        # same pipeline through the RASAero GUI in the VM (slow; tool of record)
-python -m rpa run --backend openrocket     # preview: same pipeline through OpenRocket headless
-python -m rpa <motors|mass|characterize|search|verify|report>   # one stage (outputs are cached in output/)
+python -m rpa check                     # validate the input set
+python -m rpa run                       # all stages, python backend
+python -m rpa run --backend rasaero     # same through the RASAero GUI in the VM (slow)
+python -m rpa run --backend openrocket  # preview through OpenRocket headless
+python -m rpa <motors|mass|characterize|search|verify|report>   # one stage
 ```
 
-### Backends
+Stages (outputs cached under `output/`):
 
-* **python** (default) – `rpa/flightsim.py`, a planar 3-DOF gravity-turn
-  integrator that uses RASAero's *own* aerodynamic tables (exported once per
-  vehicle revision from *Aero Plots* into `input/aero/`, see
-  `input/aero/README.md`), RASAero's launch-site atmosphere conventions, the
-  `.eng` curves and the OpenRocket mass numbers. ~25 ms per flight, and search
-  batches are spread over the CPU cores (`python_sim.workers`, default
-  cores − 1), so a full 60-booster run takes about 20 s on the Mac. It is only
-  as good as its agreement with RASAero, which is measured, not assumed:
-
-  ```
-  python -m rpa aero                   # export the Aero Plots tables via the VM into input/aero/ (once per vehicle revision)
-  python -m rpa reference --cases 10   # export ~10 RASAero flights via the VM into input/rasaero_reference/
-  python -m rpa validate               # compare term by term; overlays + validation.csv in output/validation/
-  ```
-  `reference`/`validate` also recover RASAero's air-density profile from the
-  exports (`input/rasaero_reference/density_calibration.csv`), which the
-  python backend then uses (`python_sim.density_model: auto`). Each reference
-  case keeps copies of the motors it flew, so validation survives motor-folder
-  changes.
-  `validate` checks the atmosphere (Mach from RASAero's own velocity/altitude),
-  the CD lookup, the drag reconstruction, the weight history, and the flight
-  numbers (apogee within `validation.apogee_tol_pct`, Mach at burnout within
-  `validation.mach_at_burnout_tol`). Re-run it whenever the vehicle, the aero
-  tables or the integrator change.
-  Validation status for this vehicle (2026-09-13, 8 reference flights):
-  7/8 within 0.16 % in apogee and 0.003 in Mach at burnout; the eighth is
-  a degenerate case that lights the sustainer at 90 ft/s at the coast
-  apogee (−1.2 %). The conventions that had to be matched to get there
-  are documented in `rpa/flightsim.py` and `rpa/atmosphere.py` (ignition
-  delay counted from separation, altitude thrust correction, RASAero's
-  density profile, gravity not projected onto the rail, no ignition after
-  apogee).
-* **rasaero** – the RASAero GUI driven through the VM worker (job folder).
-  Used for the aero-table exports (`rpa aero`), the reference flights
-  (`rpa reference`) and the final confirmation run of the chosen designs:
-
-  ```
-  python -m rpa confirm --top 5      # re-run the designs closest to target in RASAero, compare apogees (output/confirm.csv)
-  ```
-* **openrocket** – OpenRocket headless; different aero, preview only.
-
-1. **motors** – parse the `.eng` files, stage every booster and sustainer
-   candidate into `output/motors/` (+ `all_motors.eng` for RASAero's *Select
-   Motor File*).
-2. **mass** – pick the sustainers to search (`sustainer_selection`, cached in
-   `output/sustainers_selected.json`), then SOP figures 7–10: sustainer-only
-   and combined loaded weight / CG for every (booster, sustainer) pair, using
-   OpenRocket 24.12 headless (`output/mass_table.csv`).
-   The `.ork` supplies the mass *distribution* (dry-mass split between the
-   stages, CGs, motor positions); the absolute dry mass comes from
-   `mass_model.hardware_mass_lb` (default **180 lb** = the whole two-stage
-   vehicle without propellant): both stages' dry masses are scaled to it and
-   the `.eng` propellant masses are added on top (`rpa/massmodel.py`). Set it
-   to `null` to use the `.ork` masses unchanged. A `manual` mass model is also
-   available in `config.yaml`. The mass table records which hardware mass it
-   was built with and is recomputed when the setting changes.
-3. **characterize** – one long-coast RASAero run per booster (separation and
-   ignition 15 s after burnout) and a full *View Data* export. From the Mach
-   history of the attached stack: peak boost Mach, Mach at burnout, how long
-   after burnout the stack drops below Mach 1.2 / 0.9, rail-exit velocity →
-   which profiles each booster is eligible for and the separation delay to
-   use (`output/characterization.csv`, `output/eligibility.csv`).
-4. **search** – for every eligible (booster, profile) and every separation
-   delay on a grid across the allowed window (`profiles.separation_delay_min_s`
-   … `separation_delay_max_s`, step `separation_step_s`, narrowed per booster
-   by the profile's Mach rule): sweep the sustainer ignition delay on a coarse
-   grid (`ignition_delay_min_s` … `ignition_delay_max_s`, one batched CDX1 per
-   round; RASAero writes `MaxAltitude` back on save), find every bracket where
-   apogee crosses the target and refine with regula-falsi until within
-   `target.tolerance_ft`. Apogee vs. coast time is **not monotonic** here
-   (longer coast → sustainer burns in thinner air → higher apogee, until
-   gravity losses win), which is why brackets are used instead of a single
-   bisection. The best candidate per (booster, profile) is kept — solved
-   first, then the smallest miss, then the shortest coast (highest velocity at
-   ignition) — into `output/designs.csv` (`output/search_rows.csv` has every
-   simulation). Both delays follow RASAero's convention (separation after
-   burnout, ignition after separation) and both minimums are floored at 0, so
-   **ignition can never occur before burnout**.
-5. **verify** – full time-history export of each solution; actual Mach at
-   separation, velocity/Mach/altitude at ignition, max accel, time to apogee,
-   and a pass/fail against the profile rule and the apogee tolerance.
-6. **report** – `output/report.md`, `output/designs_ranked.csv` (ranked by
-   `ranking.metric`, default velocity at sustainer ignition, i.e. the most
-   robust ignition), and plots (`apogee_vs_delay.png`, `boost_mach.png`,
-   `final_mach_vs_time.png`).
+1. **motors** – parse the motor files, stage every candidate into
+   `output/motors/` (+ `all_motors.eng` for RASAero's *Select Motor File*).
+2. **mass** – pick the sustainers to search, then sustainer-only and combined
+   loaded weight / CG for every (booster, sustainer) pair via OpenRocket
+   headless (`output/mass_table.csv`). The `.ork` gives the mass
+   *distribution*; `mass_model.hardware_mass_lb` sets the absolute dry mass
+   (both stages scaled to it, `.eng` propellant added on top). `null` keeps
+   the `.ork` masses. A `manual` mass model is also available.
+3. **characterize** – one long-coast run per booster. From the attached
+   stack's Mach history: peak Mach, Mach at burnout, time to drop below
+   1.2 / 0.9, rail-exit velocity → which profiles each booster can fly and its
+   separation window (`characterization.csv`, `eligibility.csv`).
+4. **search** – for every eligible (booster, sustainer, profile) and every
+   separation delay on the grid, sweep the ignition delay on a coarse grid,
+   find every bracket where apogee crosses the target and refine with
+   regula-falsi to `target.tolerance_ft`. Apogee vs. coast is not monotonic
+   (a longer coast lets the sustainer burn in thinner air until gravity
+   losses win), hence brackets rather than a single bisection. Best per
+   candidate → `designs.csv`; every simulation → `search_rows.csv`.
+5. **verify** – full time-history export of each solution: Mach at
+   separation, velocity / Mach / altitude at ignition, max accel, time to
+   apogee, pass/fail against the profile rule and the tolerance.
+6. **report** – `report.md`, `designs_ranked.csv` (by `ranking.metric`,
+   default velocity at ignition) and plots.
 
 Useful flags: `--target 45000`, `--tolerance 100`, `--boosters 01,31,60`,
 `--limit 5`, `--worker-mode manual`, `--fresh`, `--include-unsolved`.
 
+### Backends
+
+* **rasaero_native** (default) – RASAero II's own flight-sim and aero code,
+  headless, in child processes (`rpa/native.py` + `native/`, see
+  `native/README.md`). No VM: ~20 ms per flight over the cores, and the
+  numbers are the VM's to 0.0003 % (`native/VALIDATION.md`). Also what
+  `rpa aero`, `rpa reference` and `rpa confirm` use when it is built
+  (`rasaero.engine: auto`). Build once:
+
+  ```
+  brew install dotnet msitools
+  python tools/rasaero_fetch.py           # installer -> vendor/rasaero/RASAeroEngine.dll
+  dotnet build native/RasaeroHost -c Release
+  ```
+* **python** – `rpa/flightsim.py`, a planar 3-DOF gravity-turn
+  integrator using RASAero's own aero tables, its launch-site atmosphere
+  conventions, the `.eng` curves and the OpenRocket mass numbers. ~25 ms per
+  flight, batches spread over the CPU cores. It is only as good as its
+  agreement with RASAero, which is measured:
+
+  ```
+  python -m rpa aero                  # Aero Plots tables (native engine, or the VM) once per vehicle revision
+  python -m rpa reference --cases 10  # ~10 RASAero reference flights (native engine, or the VM)
+  python -m rpa validate              # compare term by term -> output/validation/
+  python -m rpa validate --engine native   # the native engine itself vs VM exports -> output/validation_native/
+  ```
+  `validate` checks the atmosphere, the CD lookup, the drag reconstruction,
+  the weight history and the flight numbers (`validation.*` tolerances). It
+  also recovers RASAero's density profile from the exports
+  (`density_calibration.csv`), which the python backend then uses. Re-run it
+  whenever the vehicle, the tables or the integrator change.
+* **rasaero** – the RASAero GUI driven through the VM worker; the fallback
+  for table exports, reference flights and the final confirmation
+  (`python -m rpa confirm --top 5` → `output/confirm.csv`) when the native
+  engine is not built (`rasaero.engine: vm` forces it).
+* **openrocket** – OpenRocket headless; different aero, preview only.
+
+### Aero tables (`paths.aero_dir`)
+
+Exported from RASAero's *Aero Plots* once per vehicle revision; they depend
+on the geometry only. File name `<stack|sustainer>_alt<ft>[_noz<in>].csv`:
+`stack` = booster attached, `sustainer` = sustainer alone; `alt` = the
+Mach-Alt altitude; `noz` = nozzle exit diameter used for the power-on CD.
+Export at 2–3 altitudes and 2–4 nozzle sizes spanning the motor set; the
+tool interpolates. A Mach column and power-off / power-on CD columns are
+required. `rpa check` reports coverage.
+
+### Reference flights (`paths.reference_dir`)
+
+Pairs of `<name>.csv` (RASAero *View Data* export at 0.01 s) and
+`<name>.json` (`{"row": <SimRow>, "site": <launch site>}`), plus copies of
+the motors flown (`<name>.booster.eng` / `.sustainer.eng`) so a case stays
+reproducible when the motor set changes. `rpa reference` writes them.
+
 ## RASAero II in the Windows VM
 
-RASAero II is Windows-only and GUI-only. The pipeline talks to it through job
-folders: it writes `jobs/NNNN-name/{job.json,input.CDX1}` and waits for
-`result.CDX1` (+ `export.csv` for history exports) and `done.json`. By default
-the folder travels through UTM's guest agent (`worker.transport: agent` —
-pushed into `C:\rpa\jobs` in the VM, results pulled back as a zip; no shared
-drive involved); the `Z:` WebDAV share remains available as `transport: share`.
-`worker/rasaero_worker.py` runs inside the VM, polls its jobs folder and
-drives RASAero with pywinauto, keeping one RASAero session across jobs — see
-`worker/README.md`. The GUI's
-**Start VM worker** button boots the UTM VM and starts the worker on its
-desktop from the Mac (UTM guest agent + a Windows scheduled task,
-`worker/vm_task.ps1`, `rpa/gui/vm.py`); a heartbeat file tells the GUI
-whether the worker is alive.
+Fallback only since the native engine (`native/`): everything below is
+what `rasaero.engine: vm` or an unbuilt engine falls back to.
 
-`--worker-mode manual` prints the exact clicks for each job instead and
-continues when the files appear, so the pipeline is usable without the worker.
+RASAero II is Windows-only and GUI-only. The pipeline writes job folders
+(`jobs/NNNN-name/{job.json,input.CDX1}`) and waits for `result.CDX1`
+(+ `export.csv`) and `done.json`. Jobs travel through UTM's guest agent by
+default (`worker.transport: agent`); a `Z:` share is the fallback.
+`worker/rasaero_worker.py` runs inside the VM and drives RASAero with
+pywinauto — see `worker/README.md`. The GUI's **Start VM worker** button boots
+the VM and starts the worker. `--worker-mode manual` prints the clicks for
+each job instead and continues when the files appear.
 
 ## Layout
 
 ```
-config.yaml            all knobs (target, Mach limits, delays, launch site, paths, backend)
+config.example.yaml    template; copied to config.yaml (git-ignored) on first save
 rpa/                   pipeline package (python -m rpa ...)
   eng.py               RASP .eng parsing, impulse, nozzle exit diameter
+  ric.py               openMotor .ric designs -> cached .eng
   motors.py            booster set, sustainer candidates, spanning pick
-  openrocket.py        OpenRocket 24.12 via JPype: mass/CG and preview simulation
-  cdx1.py              RASAero CDX1 read/write (launch site, surface, SimulationList)
-  massmodel.py         hardware-mass override on top of the OpenRocket mass distribution
-  history.py           time-history parsing + event detection (burnout/separation/ignition)
-  profiles.py          characterization and the transonic-separation eligibility rules
+  openrocket.py        OpenRocket via JPype: mass/CG and preview simulation
+  cdx1.py              RASAero CDX1 read/write
+  massmodel.py         hardware-mass override on the OpenRocket distribution
+  history.py           time-history parsing + event detection
+  profiles.py          characterization and the transonic-separation rules
   search.py            apogee targeting (grid + bracket refinement)
   atmosphere.py        launch-site anchored standard atmosphere
-  aero.py              RASAero Aero Plots tables: CD(Mach, altitude, power, nozzle)
+  aero.py              Aero Plots tables: CD(Mach, altitude, power, nozzle)
   flightsim.py         3-DOF two-stage integrator (python backend)
-  validate.py          term-by-term comparison against RASAero exports
+  validate.py          comparison against RASAero exports
   backends.py          python, RASAero (job folder) and OpenRocket backends
-  jobs.py              job-folder protocol (Mac side; share or guest-agent transport)
-  vmagent.py           UTM guest-agent primitives (utmctl push / pull / exec)
+  jobs.py, vmagent.py  job-folder protocol and UTM guest-agent primitives
   pipeline.py, report.py, cli.py
-  gui/                 local web GUI: server.py (HTTP API + SSE log), runner.py (subprocess runs),
-                       state.py (step status from the files on disk), design.py (a design's motors,
-                       vehicle geometry and .eng downloads), vm.py (start/stop the worker
-                       in the UTM VM), yamledit.py, static/ (page)
-Start GUI.command      double-click launcher for the GUI (macOS)
-worker/                pywinauto worker for the Windows VM (+ worker_config.json, run_worker.py launcher,
-                       vm_task.ps1 guest-side start/stop helper)
+  service/             FastAPI app, in-process runner, start-up helpers
+  gui/                 state.py, design.py, vm.py, yamledit.py (used by service/)
+  platform.py          installed-app paths, OpenRocket / engine discovery
+app/                   desktop app: React UI (src/), Tauri shell (src-tauri/)
+build/                 packaging: rpa-service.spec, build_service.*, publish_host.*
+worker/                pywinauto worker for the Windows VM
 tests/                 unit tests (python -m pytest tests)
-input/                 .ork, .CDX1, motor files, SOP PDFs
-input/aero/            RASAero Aero Plots exports (per vehicle revision)
-input/rasaero_reference/   RASAero View Data exports + inputs used by `rpa validate`
-output/, jobs/         generated (git-ignored); output-archive/ = older result sets kept by hand
+input/                 aero tables and reference flights written by the tool (git-ignored)
+output/, jobs/         generated (git-ignored); output-archive/ = older result sets
 ```
 
 ## Setup (Mac)
 
 ```
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip install -e .
-.venv/bin/python -m rpa gui --make-app     # builds "Rocket Profile Analysis.app" (repo root + ~/Applications)
 .venv/bin/python -m pytest tests
-.venv/bin/rpa run --backend openrocket --limit 3   # smoke test, no VM needed
 ```
 
-Launching afterwards: double-click **Rocket Profile Analysis.app** (drag the
-copy in ~/Applications to the Dock), or `Start GUI.command`, or `rpa gui`. A
-second launch just opens the browser on the GUI that is already running; the
-page header has a Quit control. Rebuild the app with `--make-app` if the
-project folder moves.
+Then `rpa gui`, pick your files on the Inputs page and press Check. A
+second launch just opens the browser on the running service; the header has
+a Quit control. The installable desktop app is built with
+`build/build_service.sh && cd app && npm run tauri build` (docs/INSTALL.md).
 
-OpenRocket 24.12 is used from `/Applications/OpenRocket.app` (jar + bundled
-JRE; paths in `config.yaml`).
+OpenRocket 24.12 is expected at `/Applications/OpenRocket.app` (jar + bundled
+JRE; paths in `config.yaml`). The RASAero engine needs .NET 8 and msitools
+once (`brew install dotnet msitools`), then `python tools/rasaero_fetch.py`
+and `dotnet build native/RasaeroHost -c Release`.

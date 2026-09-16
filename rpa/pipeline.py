@@ -1,16 +1,18 @@
-"""The stages of the SOP automation, each reading/writing files under output/
-so a run can be resumed or a single stage re-done."""
+"""Pipeline stages. Each reads/writes files under output/ so a run can be
+resumed or a single stage re-done."""
 
 from __future__ import annotations
 
 import json
 import math
+import threading
 from dataclasses import fields
 from pathlib import Path
 
 import pandas as pd
 
-from . import cdx1, history as H
+from . import cdx1, manifest
+from . import history as H
 from .backends import OpenRocketBackend, PythonBackend, RASAeroBackend, SimBackend
 from .jobs import AERO_EXPORT, INSPECT, JobClient
 from .models import SUBSONIC, SUPERSONIC, Characterization, Design, MassRow, ProfileEligibility, SimRow
@@ -21,9 +23,59 @@ from .search import ApogeeSearch, make_row
 
 G_FPS2 = 32.174
 
+# ---- log routing + cooperative cancel (the in-process service runs stages
+# in threads; the CLI keeps printing) -----------------------------------------
+_SINKS: dict[int, object] = {}
+_MAIN: dict = {"sink": None, "cancel": None}
+_CANCELS: dict[int, threading.Event] = {}
+
+
+class Cancelled(Exception):
+    """The run was cancelled between two flights."""
+
+
+def current_sink():
+    return _SINKS.get(threading.get_ident()) or _MAIN["sink"]
+
+
+def set_log_sink(fn, main: bool = False) -> None:
+    _SINKS[threading.get_ident()] = fn
+    if main:
+        _MAIN["sink"] = fn
+
+
+def clear_log_sink(main: bool = False) -> None:
+    _SINKS.pop(threading.get_ident(), None)
+    if main:
+        _MAIN["sink"] = None
+
+
+def set_cancel(event, main: bool = False) -> None:
+    if event is None:
+        _CANCELS.pop(threading.get_ident(), None)
+    else:
+        _CANCELS[threading.get_ident()] = event
+    if main:
+        _MAIN["cancel"] = event
+
+
+def check_cancel() -> None:
+    ev = _CANCELS.get(threading.get_ident()) or _MAIN["cancel"]
+    if ev is not None and ev.is_set():
+        raise Cancelled()
+
 
 def log(msg: str):
-    print(msg, flush=True)
+    sink = current_sink()
+    if sink is not None:
+        sink(msg)
+    else:
+        print(msg, flush=True)
+
+
+def progress(done: int, total: int, what: str) -> None:
+    """Batch progress in the line format the runners parse."""
+    log(f"  [{done}/{total}] {what}")
 
 
 class Pipeline:
@@ -155,7 +207,10 @@ class Pipeline:
 
     def openrocket(self) -> OpenRocket:
         if self._or is None:
-            self._or = OpenRocket(self.cfg.path("openrocket_jar"), self.cfg.path("jvm")).__enter__()
+            jar, jvm = self.cfg.openrocket()
+            if jar is None:
+                raise FileNotFoundError("OpenRocket not found: install it, or set paths.openrocket_jar in config.yaml")
+            self._or = OpenRocket(jar, jvm).__enter__()
             self._or.load_rocket(self.cfg.path("ork"))
             for w in self._or.warnings:
                 log(f"  OpenRocket warning: {w}")
@@ -172,9 +227,43 @@ class Pipeline:
                 b = PythonBackend(self.cfg, self.ms, self.site, self.ref_diameter_in, log=log)
                 log(f"  [python] aero tables from {self.cfg.path('aero_dir')}:\n    " + b.aero.describe().replace("\n", "\n    "))
                 self._backend = b
+            elif self.cfg["backend"] == "rasaero_native":
+                self._backend = self.native_backend()
             else:
                 self._backend = RASAeroBackend(self.cfg, self.template, motor_file, motor_dir, self.jobs(), log=log)
         return self._backend
+
+    def rasaero_engine(self) -> str:
+        """'native' or 'vm': where RASAero itself runs (rasaero.engine)."""
+        from .native import engine_status
+
+        want = str(self.cfg["rasaero"].get("engine", "auto"))
+        if want == "vm":
+            return "vm"
+        st = engine_status(self.cfg)
+        if want == "native" and not st["ok"]:
+            raise FileNotFoundError("rasaero.engine is 'native' but " + st["detail"])
+        return "native" if st["ok"] else "vm"
+
+    def native_backend(self, motor_files=None, log=log):
+        """RASAero's engine in a child process, flying this CDX1 with the
+        staged motor set (or `motor_files`)."""
+        from .native import NativeRASAeroBackend, shared_backend
+
+        if motor_files is None:
+            _, motor_file = self.motor_paths()
+            motor_files = [motor_file]
+        if self.cfg["native"].get("shared", True):
+            return shared_backend(self.cfg, self.cfg.path("cdx1"), motor_files, self.site, self.cfg["surface_finish"], log=log)
+        return NativeRASAeroBackend(self.cfg, self.cfg.path("cdx1"), motor_files, self.site, self.cfg["surface_finish"], log=log)
+
+    def rasaero_backend(self, log=log):
+        """The backend that runs RASAero for references and confirm: native
+        when available, else the VM worker."""
+        if self.rasaero_engine() == "native":
+            return self.native_backend(log=log)
+        motor_dir, motor_file = self.motor_paths()
+        return RASAeroBackend(self.cfg, self.template, motor_file, motor_dir, self.jobs(), log=log)
 
     def close(self):
         """Release the python backend's worker processes (no-op otherwise)."""
@@ -239,6 +328,20 @@ class Pipeline:
         from .aero import STACK, SUSTAINER, AeroSet
 
         problems = []
+        for key, what in (("ork", "OpenRocket model (.ork)"), ("cdx1", "RASAero model (.CDX1)")):
+            f = self.cfg.file(key)
+            if f is None:
+                problems.append(f"no {what} selected (paths.{key})")
+            elif not f.exists():
+                problems.append(f"{what} not found: {f}")
+        if not self.cfg.motor_sources("boosters"):
+            problems.append("no booster motor files selected (paths.boosters)")
+        if not self.cfg.motor_sources("sustainers"):
+            problems.append("no sustainer motor files selected (paths.sustainers)")
+        if problems:
+            for pr in problems:
+                log(f"  !! {pr}")
+            return problems
         ms = self.ms
         sel = self.cfg["sustainer_selection"]
         log(f"check: {len(ms.boosters)} boosters, {len(ms.sustainer_candidates)} sustainer candidate(s) (selection: {sel.get('mode', 'best')}; max impulse {ms.sustainer.label}), CDX1 {self.cfg.path('cdx1').name}, ORK {self.cfg.path('ork').name}")
@@ -250,6 +353,12 @@ class Pipeline:
         except Exception as e:
             problems.append(f"CDX1: {e}")
         aero_dir = self.cfg.path("aero_dir")
+        from .native import engine_status
+
+        st = engine_status(self.cfg)
+        log(f"  RASAero engine: {'native (' + str(st['engine']) + ')' if st['ok'] else 'VM (' + st['detail'] + ')'}")
+        if self.cfg["backend"] == "rasaero_native" and not st["ok"]:
+            problems.append("backend rasaero_native: " + st["detail"])
         if self.cfg["backend"] == "python":
             try:
                 aero = AeroSet.load(aero_dir)
@@ -389,6 +498,19 @@ class Pipeline:
     def _export_aero_plan(self, plan, force: bool) -> list[Path]:
         a = self.cfg["aero_tables"]
         made = []
+        if self.rasaero_engine() == "native":
+            be = self.native_backend()
+            try:
+                for cfg_name, noz, alt, dst in plan:
+                    if dst.exists() and not force:
+                        log(f"  {dst.name}: exists, skipping")
+                    else:
+                        be.aero_table(cfg_name, alt, noz, dst, mach_max=float(a.get("mach_max", 25.0)))
+                        log(f"  aero table -> {dst}")
+                    made.append(dst)
+            finally:
+                be.close()
+            return made
         if a.get("batch_altitudes") and len(a["altitudes_ft"]) > 1:
             # one open CDX1 per (config, nozzle) covers every altitude - see
             # aero_export_batch. Still opt-in: needs a live VM check first.
@@ -441,9 +563,7 @@ class Pipeline:
         alongside the new ones and get picked up by `rpa validate`."""
         from .validate import save_case
 
-        motor_dir, motor_file = self.motor_paths()
-        jobs = self.jobs()
-        be = RASAeroBackend(self.cfg, self.template, motor_file, motor_dir, jobs, log=log)
+        be = self.rasaero_backend()
         ref_dir = self.cfg.path("reference_dir")
         old = [p for d in (ref_dir, be.history_dir) if d.exists() for p in d.glob("ref[0-9]*")]
         for p in old:
@@ -462,22 +582,31 @@ class Pipeline:
         # opt-in (worker.batch_reference_export): one Rerun All for every row
         # instead of one job per flight - needs a live check on the VM
         # before it replaces the per-flight path by default.
-        if self.cfg["worker"].get("batch_reference_export") and len(rows) > 1:
+        batched = bool(self.cfg["worker"].get("batch_reference_export")) and len(rows) > 1 and isinstance(be, RASAeroBackend)
+        if batched:
             log(f"reference: exporting {len(rows)} RASAero flights (batched) into {ref_dir}")
-            histories = be.export_batch(rows, names)
-            for row, name, h in zip(rows, names, histories, strict=True):
-                if h is None or row.max_alt_ft is None:
-                    log(f"  {name}: skipped (no result)")
-                    continue
-                keep(row, name)
-                log(f"  {name}: apogee {row.max_alt_ft:.0f} ft")
-        else:
+            try:
+                histories = be.export_batch(rows, names)
+            except Exception as e:  # noqa: BLE001 - any batch failure falls back to the per-flight path
+                log(f"reference: batched export failed: {e}")
+                log("reference: falling back to one job per flight (set worker.batch_reference_export: false to skip the batched attempt)")
+                batched = False
+            else:
+                for row, name, h in zip(rows, names, histories, strict=True):
+                    if h is None or row.max_alt_ft is None:
+                        log(f"  {name}: skipped (no result)")
+                        continue
+                    keep(row, name)
+                    log(f"  {name}: apogee {row.max_alt_ft:.0f} ft")
+        if not batched:
             log(f"reference: exporting {len(rows)} RASAero flights into {ref_dir}")
             for i, (row, name) in enumerate(zip(rows, names, strict=True)):
                 be.export(row, name)
                 keep(row, name)
                 log(f"  [{i + 1}/{len(rows)}] {name}: apogee {row.max_alt_ft:.0f} ft")
         (ref_dir / "altitude_offset.json").write_text(json.dumps({"offset_ft": be.alt_offset_ft or 0.0}))
+        if hasattr(be, "close"):
+            be.close()
         from .validate import load_cases
 
         self.write_density_calibration(load_cases(ref_dir))
@@ -497,7 +626,10 @@ class Pipeline:
         log(f"  density calibration: {len(cal[0])} bins, {cal[0][0]:.0f}-{cal[0][-1]:.0f} ft -> {out.name}")
         return out
 
-    def stage_validate(self) -> pd.DataFrame:
+    def stage_validate(self, engine: str | None = None) -> pd.DataFrame:
+        """Compare a backend against the RASAero reference exports: the
+        python backend (default), or `engine="native"` for RASAero's own
+        engine on this machine vs the VM exports (native/VALIDATION.md)."""
         from .validate import load_cases, run_validation
 
         ref_dir = self.cfg.path("reference_dir")
@@ -508,11 +640,21 @@ class Pipeline:
         offset = 0.0
         if (ref_dir / "altitude_offset.json").exists():
             offset = float(json.loads((ref_dir / "altitude_offset.json").read_text())["offset_ft"])
-        be = PythonBackend(self.cfg, self.ms, self.site, self.ref_diameter_in, log=log)
-        log(f"validate: {len(cases)} case(s) vs python backend; tolerances {self.cfg['validation']}")
-        df = run_validation(cases, be, self.cfg["validation"], self.out / "validation", alt_offset_ft=offset, log=log)
+        if engine == "native":
+            be = self.native_backend(motor_files=[])
+            out_dir = self.out / "validation_native"
+            log(f"validate: {len(cases)} case(s) vs RASAero native engine; tolerances {self.cfg['validation']}")
+        else:
+            be = PythonBackend(self.cfg, self.ms, self.site, self.ref_diameter_in, log=log)
+            out_dir = self.out / "validation"
+            log(f"validate: {len(cases)} case(s) vs python backend; tolerances {self.cfg['validation']}")
+        try:
+            df = run_validation(cases, be, self.cfg["validation"], out_dir, alt_offset_ft=offset, log=log)
+        finally:
+            if hasattr(be, "close"):
+                be.close()
         n_ok = int(df["pass"].sum())
-        log(f"  {n_ok}/{len(df)} passed; details in {self.out / 'validation'}")
+        log(f"  {n_ok}/{len(df)} passed; details in {out_dir}")
         return df
 
     # ---- final confirmation of chosen designs in RASAero itself ------------
@@ -538,11 +680,11 @@ class Pipeline:
                 return pd.DataFrame()
             todo = sorted(todo, key=lambda d: abs(d.apogee_ft - self.cfg["target"]["apogee_ft"]))[:top_n]
         rows = [make_row(d.booster, d.profile, d.sep_delay_s, d.ign_delay_s, self.ms, mass[(d.booster, d.sustainer)], self.cfg) for d in todo]
-        motor_dir, motor_file = self.motor_paths()
-        jobs = self.jobs()
-        be = RASAeroBackend(self.cfg, self.template, motor_file, motor_dir, jobs, log=log)
-        log(f"confirm: {len(rows)} design(s) through RASAero")
+        be = self.rasaero_backend()
+        log(f"confirm: {len(rows)} design(s) through RASAero ({be.name})")
         be.run_batch(rows, "confirm")
+        if hasattr(be, "close"):
+            be.close()
         recs = []
         for d, r in zip(todo, rows, strict=False):
             recs.append({"booster": d.booster, "sustainer": d.sustainer, "profile": d.profile, "sep_delay_s": d.sep_delay_s, "ign_delay_s": d.ign_delay_s, "apogee_python_ft": d.apogee_ft, "apogee_rasaero_ft": r.max_alt_ft, "diff_ft": (r.max_alt_ft - d.apogee_ft) if r.max_alt_ft is not None else None, "diff_pct": (100.0 * (r.max_alt_ft - d.apogee_ft) / d.apogee_ft) if r.max_alt_ft is not None else None, "max_vel_rasaero_fps": r.max_vel_fps, "t_apogee_rasaero_s": r.t_apogee_s})
@@ -563,8 +705,15 @@ class Pipeline:
         log(f"motors: {len(ms.boosters)} boosters; {len(ms.sustainer_candidates)} sustainer candidate(s), max impulse {ms.sustainer.label} ({ms.sustainer.total_impulse_ns:.0f} N·s); staged in {d}")
         return d, f
 
-    # ---- stage 2: mass properties (SOP figs 7-10) --------------------------
-    def stage_mass(self) -> list[MassRow]:
+    # ---- stage 2: mass properties ------------------------------------------
+    def _mass_signature(self) -> dict:
+        """What the cached mass table depends on besides the motor set."""
+        ork = self.cfg.file("ork")
+        return {"method": self.cfg["mass_model"]["method"], "hardware_mass_lb": self.cfg.hardware_mass_lb(), "ork": manifest.digest(ork) if ork and ork.exists() else None}
+
+    def stage_mass(self, keep: list[MassRow] | None = None) -> list[MassRow]:
+        """The mass table; with `keep` (rows still valid from the cache) only
+        the missing (booster, sustainer) pairs go through OpenRocket."""
         method = self.cfg["mass_model"]["method"]
         ms = self.ms
         if method == "manual":
@@ -584,13 +733,19 @@ class Pipeline:
                 rows.append(MassRow(b.label, m["sustainer_wt_lb"], m["sustainer_cg_in"], round(wt, 3), round(cg, 3), b.prop_mass_kg, sustainer=sus[0].label))
             log(f"mass: manual model, {len(rows)} boosters")
         else:
-            orr = self.openrocket()
             hw = self.cfg.hardware_mass_lb()
             sus = self.sustainers
-            rows = [r for s in sus for r in orr.mass_table(s, ms.boosters, hw)]
+            have = {r.key: r for r in keep or []}
+            todo = [(s, [b for b in ms.boosters if (b.label, s.label) not in have]) for s in sus]
+            new = []
+            if any(bs for _, bs in todo):
+                orr = self.openrocket()
+                new = [r for s, bs in todo for r in orr.mass_table(s, bs, hw)]
+            rows = [have[(b.label, s.label)] if (b.label, s.label) in have else next(r for r in new if r.key == (b.label, s.label)) for s in sus for b in ms.boosters]
             r0 = rows[0]
-            log(f"mass: OpenRocket {self.cfg.path('ork').name}, {len(ms.boosters)} boosters x {len(sus)} sustainer(s), dry mass " + (f"forced to {hw:g} lb (sustainer {r0.sustainer_dry_lb} + booster {r0.booster_dry_lb} lb; .ork scaled)" if hw is not None else f"{r0.sustainer_dry_lb + r0.booster_dry_lb:.1f} lb from the .ork") + f"; loaded: sustainer {min(r.sustainer_wt_lb for r in rows):.1f}-{max(r.sustainer_wt_lb for r in rows):.1f} lb; stack {min(r.combined_wt_lb for r in rows):.1f}-{max(r.combined_wt_lb for r in rows):.1f} lb")
+            log(f"mass: OpenRocket {self.cfg.path('ork').name}, {len(ms.boosters)} boosters x {len(sus)} sustainer(s)" + (f" ({len(new)} pair(s) computed, {len(rows) - len(new)} cached)" if have else "") + ", dry mass " + (f"forced to {hw:g} lb (sustainer {r0.sustainer_dry_lb} + booster {r0.booster_dry_lb} lb; .ork scaled)" if hw is not None else f"{r0.sustainer_dry_lb + r0.booster_dry_lb:.1f} lb from the .ork") + f"; loaded: sustainer {min(r.sustainer_wt_lb for r in rows):.1f}-{max(r.sustainer_wt_lb for r in rows):.1f} lb; stack {min(r.combined_wt_lb for r in rows):.1f}-{max(r.combined_wt_lb for r in rows):.1f} lb")
         pd.DataFrame([r.__dict__ for r in rows]).to_csv(self.out / "mass_table.csv", index=False)
+        (self.out / "mass_table.json").write_text(json.dumps(self._mass_signature(), indent=1))
         return rows
 
     def load_mass(self) -> dict[tuple[str, str], MassRow]:
@@ -608,14 +763,23 @@ class Pipeline:
             else:
                 rows = [MassRow(**{k: (str(v) if k in ("booster", "sustainer") else None if v == "" or pd.isna(v) else float(v)) for k, v in rec.items() if k in names}) for rec in df.to_dict("records")]
                 hw = self.cfg.hardware_mass_lb()
+                try:
+                    sig = json.loads((self.out / "mass_table.json").read_text())
+                except (OSError, ValueError):
+                    sig = None
                 if self.cfg["mass_model"]["method"] == "openrocket" and rows and rows[0].hardware_mass_lb != hw:
                     log(f"mass: cached mass_table.csv was built with hardware_mass_lb={rows[0].hardware_mass_lb} (config now {hw}) - recomputing")
+                    rows = self.stage_mass()
+                elif sig is None:  # table from before the signature file: adopt it
+                    (self.out / "mass_table.json").write_text(json.dumps(self._mass_signature(), indent=1))
+                elif sig != self._mass_signature():
+                    log("mass: the .ork or the mass model changed since mass_table.csv was built - recomputing")
                     rows = self.stage_mass()
                 else:
                     have = {r.key for r in rows}
                     if any((b.label, s.label) not in have for s in self.sustainers for b in self.ms.boosters):
-                        log("mass: cached mass_table.csv does not cover every (booster, sustainer) pair - recomputing")
-                        rows = self.stage_mass()
+                        log("mass: cached mass_table.csv does not cover every (booster, sustainer) pair - computing the missing ones")
+                        rows = self.stage_mass(keep=rows)
         return {r.key: r for r in rows}
 
     # ---- stage 3: characterization -----------------------------------------
@@ -634,9 +798,9 @@ class Pipeline:
         sus = self.sustainers
         pairs = [(b, s) for s in sus for b in ms.boosters]
         log(f"characterize: {len(ms.boosters)} boosters x {len(sus)} sustainer(s) = {len(pairs)} long-coast runs (sep={sep}s after burnout, ign={ign}s after separation) via {be.name}")
-        for i, (b, s) in enumerate(pairs):
-            row = make_row(b.label, None, sep, ign, ms, mass[(b.label, s.label)], self.cfg)
-            h = be.history(row, f"char-{b.label}+{s.label}")
+        rows = [make_row(b.label, None, sep, ign, ms, mass[(b.label, s.label)], self.cfg) for b, s in pairs]
+        names = [f"char-{b.label}+{s.label}" for b, s in pairs]
+        for i, ((b, s), row, h) in enumerate(zip(pairs, rows, be.histories(rows, names), strict=True)):
             ch = characterize(b.label, h, self.cfg, sep, ign, rod, sustainer=s.label)
             chars.append(ch)
             elig.extend(eligibility(ch, h, self.cfg))

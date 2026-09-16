@@ -1,14 +1,11 @@
 """Atmosphere for the Python flight simulator.
 
-US Standard Atmosphere 1976 shape, anchored to the launch site the way the
-RASAero launch-site inputs describe it: the site temperature is the
-temperature at the pad, the standard lapse rate applies above it, and the
-site pressure is the barometric (sea-level reduced) reading unless
-`pressure_is_sea_level` is false, in which case it is the station pressure.
-Everything is in English engineering units (ft, lbf, slug, deg R).
-
-The exact anchoring convention RASAero uses is confirmed by the validation
-stage (Mach column at equal velocity/altitude), not assumed here.
+US Standard Atmosphere 1976 shape anchored to the RASAero launch-site
+inputs: site temperature at the pad, standard lapse rate above it, site
+pressure as the barometric (sea-level reduced) reading unless
+`pressure_is_sea_level` is false (station pressure). English engineering
+units (ft, lbf, slug, deg R). The validation stage confirms the anchoring
+against RASAero's Mach column.
 """
 
 from __future__ import annotations

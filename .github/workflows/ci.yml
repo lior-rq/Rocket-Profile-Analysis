@@ -1,0 +1,62 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - if: runner.os == 'macOS'
+        run: brew install msitools
+      - run: pip install -r requirements.txt && pip install -e .
+      - name: RASAero engine (cached)
+        id: engine
+        uses: actions/cache@v4
+        with:
+          path: vendor/rasaero
+          key: rasaero-1.0.2.0-${{ runner.os }}-${{ hashFiles('tools/rasaero_fetch.py', 'native/RasaeroPatch/**') }}
+      - if: steps.engine.outputs.cache-hit != 'true'
+        run: python tools/rasaero_fetch.py
+      - run: dotnet build native/RasaeroHost -c Release --nologo -v q
+      - run: python -m pytest -q
+      - run: npm ci --no-audit --no-fund
+        working-directory: app
+      - run: npm run build
+        working-directory: app
+      - name: Playwright smoke against the service
+        shell: bash
+        working-directory: app
+        run: |
+          python ../build/fixture_project.py ../build/fixture
+          python -m rpa gui --root ../build/fixture --port 8799 --no-browser > ../build/service.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8799/api/ping >/dev/null && break; sleep 1; done
+          npx playwright install --with-deps chromium
+          npx playwright test
+          curl -s -X POST http://127.0.0.1:8799/api/quit >/dev/null || true
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-${{ matrix.os }}
+          path: |
+            app/e2e/results
+            build/service.log
+          if-no-files-found: ignore

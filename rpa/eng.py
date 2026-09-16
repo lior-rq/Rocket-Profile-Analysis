@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-# our optimizer writes "; Throat 1.860 in, exit 3.880 in." into the header
+# nozzle sizes come from a header comment: "; Throat 1.860 in, exit 3.880 in."
 _NOZZLE_RE = re.compile(r"throat\s+([\d.]+)\s*in.*?exit\s+([\d.]+)\s*in", re.IGNORECASE)
 _INDEX_RE = re.compile(r"^(\d+)[-_]")
 _SUFFIX_RE = re.compile(r"-(\d+)$")

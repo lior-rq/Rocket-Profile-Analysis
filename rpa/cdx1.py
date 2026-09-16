@@ -1,10 +1,10 @@
 """RASAero II .CDX1 (XML) reading/writing.
 
-We never touch the RocketDesign section (the user's aero model). We set the
-launch site + surface finish per the SOP and replace <SimulationList> with our
-own batch of <Simulation> rows. RASAero writes MaxAltitude / MaxVelocity /
-TimetoApogee back into each row when the file is saved after "Rerun All
-Simulations", which is how batch results come back.
+The RocketDesign section is left alone. Launch site and surface finish are
+set, and <SimulationList> is replaced with a batch of <Simulation> rows.
+RASAero writes MaxAltitude / MaxVelocity / TimetoApogee back into each row
+when the file is saved after "Rerun All Simulations"; that is how results
+come back.
 """
 
 from __future__ import annotations
@@ -38,13 +38,17 @@ def load(path: str | Path) -> ET.ElementTree:
     return ET.parse(str(path))
 
 
-def save(tree: ET.ElementTree, path: str | Path) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+def to_bytes(tree: ET.ElementTree) -> bytes:
     ET.indent(tree, space="  ")
     # RASAero's own files have no XML declaration and use CRLF; be conservative.
     body = ET.tostring(tree.getroot(), encoding="unicode")
-    path.write_bytes(body.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
+    return body.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8")
+
+
+def save(tree: ET.ElementTree, path: str | Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(to_bytes(tree))
     return path
 
 
@@ -182,6 +186,11 @@ def simulation_element(row: SimRow) -> ET.Element:
 
 
 def write_batch(template: ET.ElementTree, rows: list[SimRow], out_path: str | Path, *, launch_site_overrides: dict | None = None, surface: str | None = None) -> Path:
+    return save(build_batch(template, rows, launch_site_overrides=launch_site_overrides, surface=surface), out_path)
+
+
+def build_batch(template: ET.ElementTree, rows: list[SimRow], *, launch_site_overrides: dict | None = None, surface: str | None = None) -> ET.ElementTree:
+    """The template with its SimulationList replaced by `rows`."""
     tree = copy.deepcopy(template)
     root = tree.getroot()
     if launch_site_overrides:
@@ -195,7 +204,7 @@ def write_batch(template: ET.ElementTree, rows: list[SimRow], out_path: str | Pa
         sl.remove(child)
     for r in rows:
         sl.append(simulation_element(r))
-    return save(tree, out_path)
+    return tree
 
 
 def read_results(path: str | Path) -> list[dict]:

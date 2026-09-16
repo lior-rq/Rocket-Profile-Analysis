@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import manifest
+from . import __version__, manifest
 from .config import load_config
 from .pipeline import Pipeline, log
 
@@ -16,11 +16,12 @@ STAGES = ["motors", "mass", "characterize", "search", "verify", "report"]
 
 
 def build_parser():
-    ap = argparse.ArgumentParser(prog="rpa", description="Two-stage flight profile optimizer (OpenRocket + RASAero II SOP automation)")
-    ap.add_argument("stage", choices=[*STAGES, "run", "check", "aero", "reference", "validate", "confirm", "inspect", "gui"], help="pipeline stage; 'run' = all stages in order; 'check' = validate the input set; 'reference' = export RASAero reference flights (VM); 'validate' = compare the python backend against them; 'inspect' = map RASAero's GUI via the VM worker; 'gui' = open the local web GUI")
+    ap = argparse.ArgumentParser(prog="rpa", description="Two-stage flight profile optimizer (OpenRocket + RASAero II)")
+    ap.add_argument("stage", choices=[*STAGES, "run", "check", "aero", "reference", "validate", "confirm", "inspect", "gui", "service"], help="pipeline stage; 'run' = all stages in order; 'check' = validate the input set; 'reference' = export RASAero reference flights (VM); 'validate' = compare the python backend against them; 'inspect' = map RASAero's GUI via the VM worker; 'gui' = open the local web GUI")
     ap.add_argument("--config", default=None, help="config.yaml path (default: ./config.yaml)")
     ap.add_argument("--root", default=None, help="repo root (default: cwd)")
-    ap.add_argument("--backend", choices=["python", "rasaero", "openrocket"], default=None, help="override backend")
+    ap.add_argument("--backend", choices=["python", "rasaero_native", "rasaero", "openrocket"], default=None, help="override backend")
+    ap.add_argument("--engine", choices=["auto", "native", "vm"], default=None, help="where RASAero runs for aero/reference/confirm/validate (rasaero.engine)")
     ap.add_argument("--target", type=float, default=None, help="target apogee [ft]")
     ap.add_argument("--tolerance", type=float, default=None, help="apogee tolerance [ft]")
     ap.add_argument("--worker-mode", choices=["auto", "manual"], default=None)
@@ -32,28 +33,39 @@ def build_parser():
     ap.add_argument("--cases", type=int, default=10, help="reference: number of RASAero reference flights to export")
     ap.add_argument("--top", type=int, default=5, help="confirm: how many designs (closest to target) to re-run in RASAero")
     ap.add_argument("--designs", default=None, help="confirm: comma-separated design keys booster|sustainer|profile (the GUI shortlist) instead of --top")
-    ap.add_argument("--port", type=int, default=8765, help="gui: local port (default 8765)")
+    ap.add_argument("--port", type=int, default=8765, help="gui/service: local port (default 8765; 0 = any free port)")
+    ap.add_argument("--project", default=None, help="service: project folder (default: the last one used, else the template project)")
     ap.add_argument("--no-browser", action="store_true", help="gui: do not open the browser automatically")
-    ap.add_argument("--make-app", action="store_true", help="gui: build the double-clickable 'Rocket Profile Analysis.app' (macOS) and exit")
-    ap.add_argument("--quiet", action="store_true", help="gui: no console output (used by the .app launcher)")
+    ap.add_argument("--quiet", action="store_true", help="gui/service: no console output")
+    ap.add_argument("--version", action="version", version=f"rpa {__version__}")
     return ap
 
 
 def main(argv=None):
+    code = run(argv)
+    if code:
+        sys.exit(code)
+
+
+def run(argv=None) -> int:
+    """The command line as a function: 0 ok, 1 findings (check/validate),
+    2 usage or error. The app service calls this in a thread."""
     args = build_parser().parse_args(argv)
-    if args.stage == "gui":
+    if args.stage in ("gui", "service"):
+        from .service.app import serve
+
+        if args.stage == "service":
+            from . import platform as PL
+
+            root = Path(args.project or args.root or PL.default_project()).resolve()
+            if not (root / "config.yaml").exists() and PL.template_dir() is not None and not args.project:
+                root = PL.new_project("Project")
+            PL.remember_project(root)
+            serve(root, port=args.port, open_browser=False, quiet=args.quiet, announce=True)
+            return 0
         root = Path(args.root or Path.cwd()).resolve()
-        if args.make_app:
-            from .gui.launcher import make_app, write_command_file
-
-            made = make_app(root)
-            write_command_file(root)
-            print("built: " + ", ".join(str(m) for m in made) + "\nDouble-click it (or drag the one in ~/Applications to the Dock); 'Start GUI.command' is the Terminal fallback.")
-            return
-        from .gui.server import serve
-
         serve(root, port=args.port, open_browser=not args.no_browser, quiet=args.quiet)
-        return
+        return 0
     over = {}
     if args.backend:
         over["backend"] = args.backend
@@ -61,6 +73,8 @@ def main(argv=None):
         over["target"] = {k: v for k, v in [("apogee_ft", args.target), ("tolerance_ft", args.tolerance)] if v is not None}
     if args.worker_mode:
         over["worker"] = {"mode": args.worker_mode}
+    if args.engine:
+        over["rasaero"] = {"engine": args.engine}
     if args.decel_subsonic:
         over["profiles"] = {"include_decel_subsonic": True}
     cfg = load_config(args.config, root=args.root, overrides=over)
@@ -78,34 +92,36 @@ def main(argv=None):
         else:
             sel = ms.boosters[: args.limit]
         if not sel:
-            sys.exit(f"no boosters matched {args.boosters!r}")
+            log(f"no boosters matched {args.boosters!r}")
+            return 2
         ms.boosters = sel
         log(f"restricted to {len(sel)} booster(s): {', '.join(b.label for b in sel)}")
 
     if args.stage == "inspect":
         pipe.inspect_rasaero()
-        return
+        return 0
     if args.stage == "check":
         problems = pipe.check()
         manifest.write(cfg, "check", problems=len(problems))
-        sys.exit(1 if problems else 0)
+        return 1 if problems else 0
     if args.stage == "aero":
         pipe.stage_aero(force=args.fresh, clear_stale=not (args.boosters or args.limit))
-        return
+        return 0
     if args.stage == "confirm":
         pipe.stage_confirm(top_n=args.top, include_unsolved=args.include_unsolved, designs=[k.strip() for k in args.designs.split(",") if k.strip()] if args.designs else None)
-        return
+        return 0
     if args.stage == "reference":
         pipe.stage_reference(args.cases)
-        return
+        return 0
     if args.stage == "validate":
-        df = pipe.stage_validate()
-        sys.exit(0 if bool(df["pass"].all()) else 1)
+        df = pipe.stage_validate(engine=args.engine)
+        return 0 if bool(df["pass"].all()) else 1
     stages = STAGES if args.stage == "run" else [args.stage]
     try:
         run_stages(pipe, cfg, stages, args)
     finally:
         pipe.close()
+    return 0
 
 
 def run_stages(pipe, cfg, stages, args):

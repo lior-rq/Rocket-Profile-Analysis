@@ -1,25 +1,14 @@
-from pathlib import Path
+import re
 
 import numpy as np
 
-from rpa.eng import parse_eng, write_combined_eng
+from rpa.eng import expand_motor_sources, parse_eng, write_combined_eng
 from rpa.motors import load_motor_set
 
-from rpa.config import load_config
 
-ROOT = Path(__file__).resolve().parents[1]
-_CFG = load_config(ROOT / "config.yaml", root=ROOT)
-from rpa.eng import expand_motor_sources
-
-BOOSTERS = _CFG.motor_sources("boosters")  # whatever motor set config.yaml currently points at (files and/or folders)
-SUSTAINERS = _CFG.motor_sources("sustainers")
-BOOSTER_FILES = expand_motor_sources(BOOSTERS)
-
-
-def test_parse_booster_header_and_nozzle():
-    import re
-
-    path = BOOSTER_FILES[0]
+def test_parse_booster_header_and_nozzle(motor_dirs):
+    boosters, _ = motor_dirs
+    path = expand_motor_sources(boosters)[0]
     ms = parse_eng(path)
     m = ms[0]
     if len(ms) == 1:
@@ -29,7 +18,7 @@ def test_parse_booster_header_and_nozzle():
         imp, idx = re.match(r"^(\d+)[A-Z]\d+-(\d+)$", m.designation).groups()
         assert m.label == m.designation and m.index == int(idx) and m.n_in_file == len(ms)
         assert m.block_text.splitlines()[-1].split()[0] != m.designation  # ends with data, not the header
-    assert m.manufacturer == "LiorsRocketOptimizer"
+    assert m.manufacturer == "Maker"
     assert m.diameter_mm > 0 and m.length_mm > 0 and m.prop_mass_kg > 0
     assert m.nozzle_throat_in and m.nozzle_exit_in and m.nozzle_exit_in > m.nozzle_throat_in
     assert abs(m.total_impulse_ns - int(imp)) < 0.01 * int(imp)  # name encodes the impulse
@@ -37,18 +26,18 @@ def test_parse_booster_header_and_nozzle():
     assert m.rasaero_name() == f"{m.designation}  ({m.manufacturer})"
 
 
-def test_sustainer_selection_is_max_impulse():
-    ms = load_motor_set(BOOSTERS, SUSTAINERS)
+def test_sustainer_selection_is_max_impulse(motor_dirs):
+    ms = load_motor_set(*motor_dirs)
     assert len(ms.boosters) >= 2 and len({b.label for b in ms.boosters}) == len(ms.boosters)
     best = max(ms.sustainer_candidates, key=lambda m: m.total_impulse_ns)
     assert ms.sustainer.total_impulse_ns == best.total_impulse_ns
     assert ms.sustainer.label == best.label
 
 
-def test_combined_file_roundtrip(tmp_path):
+def test_combined_file_roundtrip(tmp_path, motor_dirs):
     from rpa.eng import load_motors
 
-    ms = load_motors(BOOSTERS)[:3]
+    ms = load_motors(motor_dirs[0])[:3]
     out = write_combined_eng(ms, tmp_path / "all.eng")
     back = parse_eng(out)
     assert [m.designation for m in back] == [m.designation for m in ms]  # each motor's own block only, even from a multi-motor file
@@ -57,11 +46,11 @@ def test_combined_file_roundtrip(tmp_path):
         assert b.nozzle_exit_in == a.nozzle_exit_in
 
 
-def test_multiple_sources_and_single_files(tmp_path):
-    from rpa.eng import expand_motor_sources, load_motors
+def test_multiple_sources_and_single_files(tmp_path, motor_dirs):
+    from rpa.eng import load_motors
 
-    # three one-motor files written from the current set, whatever its shape
-    motors = load_motors(BOOSTERS)[:3]
+    # three one-motor files written from the fixture set
+    motors = load_motors(motor_dirs[0])[:3]
     single = tmp_path / "single"
     single.mkdir()
     files = []

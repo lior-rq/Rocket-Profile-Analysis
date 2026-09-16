@@ -1,6 +1,6 @@
 """Everything the browser needs to draw the dashboard, computed from the
-files on disk (config.yaml, input/, output/, jobs/, worker/console.log).
-Nothing here is cached beyond the motor set; a call is a few tens of ms."""
+files on disk (config.yaml, the configured inputs, output/, jobs/,
+worker/console.log). Only the motor set is cached; a call takes tens of ms."""
 
 from __future__ import annotations
 
@@ -40,13 +40,15 @@ TABLES = {
 }  # search_rows.csv is deliberately absent: tens of MB, nothing shows it
 
 
-def file_info(p: Path, root: Path | None = None) -> dict:
+def file_info(p: Path | None, root: Path | None = None) -> dict:
+    if p is None:
+        return {"name": None, "path": None, "exists": False, "mtime": None, "size": None}
+    rel = _rel(p, root) if root else str(p)
     try:
         st = p.stat()
-        rel = str(p.relative_to(root)) if root else str(p)
         return {"name": p.name, "path": rel, "exists": True, "mtime": st.st_mtime, "size": st.st_size}
-    except (OSError, ValueError):
-        return {"name": p.name, "path": str(p.relative_to(root)) if root and root in p.parents else str(p), "exists": False, "mtime": None, "size": None}
+    except OSError:
+        return {"name": p.name, "path": rel, "exists": False, "mtime": None, "size": None}
 
 
 def ago_text(seconds: float) -> str:
@@ -69,9 +71,9 @@ def _rel(p: Path, root: Path) -> str:
     return str(p)
 
 
-def _mtime(p: Path) -> float | None:
+def _mtime(p: Path | None) -> float | None:
     try:
-        return p.stat().st_mtime
+        return p.stat().st_mtime if p is not None else None
     except OSError:
         return None
 
@@ -117,6 +119,8 @@ class StateCollector:
 
         files, problems = [], []
         conv = self.ric_converter(cfg)
+        if not cfg.motor_sources(kind):
+            problems.append("no motor files selected")
         for src in cfg.motor_sources(kind):
             try:
                 got = expand_motor_sources([src], ric=conv)
@@ -166,33 +170,42 @@ class StateCollector:
                 self._ms_error = f"{type(e).__name__}: {e}"
         return self._ms, self._ms_error
 
-    def options(self) -> dict:
-        inp = self.root / "input"
-        orks = sorted(str(p.relative_to(self.root)) for p in inp.rglob("*.ork")) if inp.exists() else []
-        cdx = sorted(str(p.relative_to(self.root)) for p in inp.rglob("*") if p.suffix.lower() == ".cdx1") if inp.exists() else []
+    def motor_tree(self, entries: list, extra_folders: list | None = None) -> dict:
+        """Folder groups for the motor picker. `entries` is a config list
+        (folders and/or files); `extra_folders` are folders shown with
+        nothing ticked yet. Paths come back in the form config.yaml stores
+        them: relative when under the project, absolute otherwise."""
         cfg = self.config()
-        # per-case motor copies and staged outputs are not candidate sources
-        skip_dirs = [cfg.path("reference_dir").resolve(), cfg.output_dir.resolve()]
-        folders: dict[str, list] = {}
-        if inp.exists():
-            for p in sorted(list(inp.rglob("*.eng")) + list(inp.rglob("*.ric"))):
-                rp = p.resolve()
-                if any(part.startswith(".") for part in p.relative_to(self.root).parts) or any(d == rp.parent or d in rp.parents for d in skip_dirs):
-                    continue
-                folders.setdefault(str(p.parent.relative_to(self.root)), []).append(p)
-        motor_dirs = []
+        folders: dict[Path, Path] = {}  # resolved -> as given
+        selected: set[str] = set()
+        unknown: list[str] = []
+        for entry in [*(entries or []), *(extra_folders or [])]:
+            if entry in (None, ""):
+                continue
+            p = cfg.resolve(entry)
+            if p.is_dir():
+                folders.setdefault(p.resolve(), p)
+                if entry in (entries or []):
+                    for f in list(p.glob("*.eng")) + list(p.glob("*.ric")):
+                        selected.add(_rel(f, self.root))
+            elif p.is_file():
+                folders.setdefault(p.resolve().parent, p.parent)
+                selected.add(_rel(p, self.root))
+            else:
+                unknown.append(str(entry))
         conv = self.ric_converter(cfg)
-        for d, files in sorted(folders.items()):
-            entries = []
-            for f in sorted(files):
+        out = []
+        for p in sorted(folders.values(), key=lambda d: _rel(d, self.root)):
+            files = []
+            for f in sorted(list(p.glob("*.eng")) + list(p.glob("*.ric"))):
                 if f.suffix.lower() == ".ric":
                     cached = conv.cached(f)
                     info = self.eng_info(cached) if cached else {"n_motors": 1, "pending": True}
-                    entries.append({"name": f.name, "label": f.stem, "path": str(f.relative_to(self.root)), "kind": "ric", **info})
+                    files.append({"name": f.name, "label": f.stem, "path": _rel(f, self.root), "kind": "ric", **info})
                 else:
-                    entries.append({"name": f.name, "label": f.stem, "path": str(f.relative_to(self.root)), "kind": "eng", **self.eng_info(f)})
-            motor_dirs.append({"path": d, "n": len(entries), "files": entries})
-        return {"ork": orks, "cdx1": cdx, "motor_dirs": motor_dirs}
+                    files.append({"name": f.name, "label": f.stem, "path": _rel(f, self.root), "kind": "eng", **self.eng_info(f)})
+            out.append({"path": _rel(p, self.root), "n": len(files), "files": files})
+        return {"folders": out, "selected": sorted(selected), "unknown": unknown}
 
     # ---- the big one --------------------------------------------------------
     def collect(self, runner, vm=None) -> dict:
@@ -202,7 +215,7 @@ class StateCollector:
         ms, ms_err = self.motor_set(cfg)
 
         # inputs --------------------------------------------------------------
-        ork, cdx1 = cfg.path("ork"), cfg.path("cdx1")
+        ork, cdx1 = cfg.file("ork"), cfg.file("cdx1")
         b_files, b_problems = self.motor_files(cfg, "boosters")
         s_files, s_problems = self.motor_files(cfg, "sustainers")
         motor_files = b_files + s_files
@@ -211,7 +224,7 @@ class StateCollector:
         try:
             from .. import cdx1 as C
 
-            tree = C.load(cdx1)
+            tree = C.load(cfg.path("cdx1"))
             site_cdx1 = C.launch_site(tree)
             site = dict(site_cdx1)
             site.update({k: v for k, v in cfg["launch_site"].items() if v is not None})
@@ -234,9 +247,13 @@ class StateCollector:
             }
         last_check = runner.last_run("check")
         problems = []
-        if not ork.exists():
+        if ork is None:
+            problems.append("no OpenRocket model (.ork) selected")
+        elif not ork.exists():
             problems.append(f"OpenRocket file not found: {cfg['paths']['ork']}")
-        if not cdx1.exists():
+        if cdx1 is None:
+            problems.append("no RASAero model (.CDX1) selected")
+        elif not cdx1.exists():
             problems.append(f"RASAero file not found: {cfg['paths']['cdx1']}")
         for pr in b_problems:
             problems.append(f"boosters: {pr}")
@@ -273,7 +290,7 @@ class StateCollector:
             "last_check": last_check,
             "changes": check_changes,
             "inputs_mtime": inputs_mtime,
-            "openrocket_jar": file_info(cfg.path("openrocket_jar")),
+            "openrocket_jar": file_info(cfg.file("openrocket_jar")),
         }
 
         # mass model ----------------------------------------------------------
@@ -348,7 +365,7 @@ class StateCollector:
             "n_have": n_have,
             "n_plan": len(plan_rows),
             "dir": str(aero_dir.relative_to(root)) if root in aero_dir.parents else str(aero_dir),
-            "stale": bool(aero_mtime and cdx1.exists() and aero_mtime < (_mtime(cdx1) or 0)),
+            "stale": bool(aero_mtime and _mtime(cdx1) and aero_mtime < _mtime(cdx1)),
             "settings": cfg["aero_tables"],
         }
 
@@ -611,7 +628,8 @@ class StateCollector:
         try:
             cfg = self.config()
             for k in ("ork", "cdx1"):
-                add(cfg.path(k))
+                if (p := cfg.file(k)) is not None:
+                    add(p)
             for kind in ("boosters", "sustainers"):
                 for src in cfg.motor_sources(kind):
                     if src.is_dir():
@@ -711,7 +729,16 @@ class StateCollector:
             state, detail = "online", f"activity {ago_text(now - last_seen)} (older launcher without heartbeat)"
         else:
             state, detail = "offline", ("no heartbeat - start the worker" if last_seen else "never started")
-        return {"state": state, "detail": detail, "last_seen": last_seen, "version": version, "heartbeat": hb, "alive": alive, "vm": vm_info, "transport": transport, "current_job": current_job, "console_tail": tail[-n_tail:], "jobs": jobs[:n_jobs], "n_jobs": len(jobs), "n_queued": len(queued), "n_active": len(active), "n_orphan": len(orphans), "jobs_dir": str(jobs_dir.relative_to(root)) if root in jobs_dir.parents else str(jobs_dir), "mode": cfg["worker"]["mode"]}
+        engine = None
+        if cfg["backend"] == "rasaero_native" or str(cfg["rasaero"].get("engine", "auto")) != "vm":
+            from .. import native
+
+            engine = native.engine_status(cfg)
+            if engine["ok"] and (cfg["backend"] == "rasaero_native" or not active and not queued):
+                state, detail = "online", "RASAero engine (native, no VM needed)"
+            elif not engine["ok"] and cfg["backend"] == "rasaero_native":
+                state, detail = "offline", "RASAero native engine: " + engine["detail"]
+        return {"state": state, "detail": detail, "last_seen": last_seen, "version": version, "heartbeat": hb, "alive": alive, "vm": vm_info, "transport": transport, "current_job": current_job, "console_tail": tail[-n_tail:], "jobs": jobs[:n_jobs], "n_jobs": len(jobs), "n_queued": len(queued), "n_active": len(active), "n_orphan": len(orphans), "jobs_dir": str(jobs_dir.relative_to(root)) if root in jobs_dir.parents else str(jobs_dir), "mode": cfg["worker"]["mode"], "engine": engine}
 
     def job_info(self, d: Path, brief: bool = False) -> dict:
         spec, done = {}, None

@@ -1,15 +1,11 @@
 """Start / stop the RASAero worker inside the UTM Windows VM from the Mac.
 
-Built on rpa.vmagent (utmctl push / pull / exec through the guest agent).
-`exec` runs as SYSTEM in session 0, where nothing can touch the desktop, so
-the worker itself is started through a Windows scheduled task bound to the
-interactive user; that logic lives in worker/vm_task.ps1, which is pushed
-into the guest before every action (the WebDAV share caches file contents)
-and answers through a base64 result file matched by a nonce.
-
-With the `agent` job transport the worker files themselves are pushed into
-C:\\rpa\\worker and the worker runs entirely from local disk; its heartbeat
-and console log are pulled back here for the GUI.
+Built on rpa.vmagent (utmctl push / pull / exec). `exec` runs as SYSTEM in
+session 0 and cannot touch the desktop, so the worker is started through a
+scheduled task bound to the interactive user (worker/vm_task.ps1, pushed
+before every action; answers through a base64 result file matched by a
+nonce). With the `agent` transport the worker files are pushed into
+C:\\rpa\\worker and its heartbeat and console log pulled back for the GUI.
 """
 
 from __future__ import annotations

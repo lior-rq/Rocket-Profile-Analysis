@@ -1,5 +1,6 @@
-"""One design's motors + vehicle geometry for the results infographic, and
-the .eng / .zip downloads of the motor combo a design was flown with."""
+"""One design's motors + vehicle geometry for the results infographic, the
+.eng / .zip downloads of the motor combo a design was flown with, and the
+RASAero bundle (one CDX1 + one motor file) of the solved or starred designs."""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import pandas as pd
 
 from ..backends import safe_name as _hist_safe_name
 from ..eng import Motor, combined_eng_text, parse_eng
+from .state import records
 
 _CLASS_RE = re.compile(r"^\d*([A-Z])")
 _SAFE_RE = re.compile(r"[^A-Za-z0-9._+-]+")
@@ -173,10 +175,10 @@ class DesignAssets:
 
     def vehicle(self) -> dict | None:
         cfg = self.state.config()
-        p = cfg.path("cdx1")
+        p = cfg.file("cdx1")
         try:
             st = p.stat()
-        except OSError:
+        except (OSError, AttributeError):
             return None
         key = (str(p), st.st_mtime_ns, st.st_size)
         if self._geo and self._geo[0] == key:
@@ -204,8 +206,6 @@ class DesignAssets:
         rows = df[sel]
         if rows.empty:
             return None
-        from .state import records
-
         return records(rows.iloc[[0]])[0]
 
     # ---- payloads -----------------------------------------------------------
@@ -264,6 +264,57 @@ class DesignAssets:
         name = f"{safe_name(b.label)}+{safe_name(s.label)}" + (f"-{safe_name(profile)}" if profile else "") + ".zip"
         return name, buf.getvalue()
 
+    def bundle_download(self, which: str, keys: list[str] | None = None) -> tuple[str, bytes]:
+        """Every solved design (`which="solved"`) or the shortlisted ones
+        (`"shortlist"`, in `keys` order) as one RASAero flight-simulation
+        file plus the motor file its rows need. A CDX1 names its motors but
+        never carries them, so the pair is the smallest thing RASAero can
+        open and Rerun All on."""
+        from ..cdx1 import build_batch, to_bytes
+        from ..pipeline import Pipeline
+        from ..search import make_row
+
+        p = self.root / "output" / "designs.csv"
+        if not p.exists():
+            raise FileNotFoundError("no designs.csv - run the optimizer first")
+        df = pd.read_csv(p, dtype={"booster": str, "sustainer": str, "profile": str})
+        recs = records(df)
+        cfg = self.state.config()
+        target = float(cfg["target"]["apogee_ft"])
+        if which == "solved":
+            recs = sorted((r for r in recs if r.get("status") == "solved"), key=lambda r: abs((r.get("apogee_ft") or 0.0) - target))
+        elif which == "shortlist":
+            by_key = {f"{r['booster']}|{r['sustainer']}|{r['profile']}": r for r in recs}
+            recs = [by_key[k] for k in keys or [] if k in by_key]
+        else:
+            raise ValueError("which must be solved or shortlist")
+        if not recs:
+            raise ValueError("no solved designs yet" if which == "solved" else "nothing shortlisted (star designs in the results table first)")
+        ms, err = self.state.motor_set(cfg)
+        if ms is None:
+            raise ValueError(f"motor set unavailable: {err}")
+        pl = Pipeline(cfg)
+        pl._ms = ms  # the GUI's tolerant loader, as simulate() does
+        mass = pl.load_mass()
+        rows, motors = [], {}
+        for r in recs:
+            m = mass.get((r["booster"], r["sustainer"]))
+            if m is None:
+                raise ValueError(f"no mass row for {r['booster']} + {r['sustainer']} (run the mass stage first)")
+            rows.append(make_row(r["booster"], r["profile"], r["sep_delay_s"], r["ign_delay_s"], ms, m, cfg))
+            # the same Motor objects the row names were formatted from
+            motors.setdefault(("booster", r["booster"]), ms.booster(r["booster"]))
+            motors.setdefault(("sustainer", r["sustainer"]), ms.sustainer_by_label(r["sustainer"]))
+        stem = f"{safe_name(cfg.path('cdx1').stem)}-{which}-{len(rows)}"
+        tree = build_batch(pl.template, rows, launch_site_overrides=pl.site, surface=cfg["surface_finish"])
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr(f"{stem}.CDX1", to_bytes(tree))
+            z.writestr(f"{stem}.eng", combined_eng_text(list(motors.values())))
+            z.writestr("designs.csv", pd.DataFrame(recs, columns=df.columns).to_csv(index=False))
+            z.writestr("README.txt", _bundle_readme(which, stem, recs, rows, motors, pl.site, target, cfg["rasaero"]["engine_name_format"]))
+        return f"{stem}.zip", buf.getvalue()
+
 
 def _eng_text(m: Motor) -> str:
     text = m.raw_text().rstrip("\n") + "\n"
@@ -294,4 +345,26 @@ def _readme(summary: dict, combined_name: str) -> str:
         f"exported {summary['exported']}",
         "",
     ]
+    return "\n".join(lines)
+
+
+def _bundle_readme(which: str, stem: str, recs: list[dict], rows, motors: dict, site: dict, target_ft: float, name_fmt: str) -> str:
+    what = "solved designs" if which == "solved" else "shortlisted designs"
+    lines = [
+        f"Rocket Profile Analysis - RASAero II bundle: {len(rows)} {what}",
+        f"target apogee {target_ft:.0f} ft; launch site " + ", ".join(f"{k} {v}" for k, v in site.items()),
+        "",
+        "Open in RASAero II:",
+        f"  1. File > Select Motor File > {stem}.eng      (once; RASAero remembers it)",
+        f"  2. File > Open > {stem}.CDX1",
+        "  3. Flight Sim > Simulations > Rerun All Simulations",
+        "",
+        "One grid row per design, in this order (apogee = the optimizer's python estimate):",
+    ]
+    for i, (r, row) in enumerate(zip(recs, rows, strict=True), 1):
+        lines.append(f"  {i:2d}. {row.booster} + {row.sustainer}  {r.get('profile')}  sep {row.sep_delay_s:g} s, ign {row.ign_delay_s:g} s, pad {row.combined_wt_lb:.1f} lb -> {r.get('apogee_ft') or 0:.0f} ft [{r.get('status')}]")
+    lines += ["", f"motors in {stem}.eng:"]
+    for (kind, _label), m in motors.items():
+        lines.append(f"  {kind:9s} {m.rasaero_name(name_fmt):40s} {m.total_impulse_ns:.0f} N·s, {m.burn_time_s:.2f} s burn")
+    lines += ["", "designs.csv: the optimizer's full numbers for these rows", f"exported {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
     return "\n".join(lines)

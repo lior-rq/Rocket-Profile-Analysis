@@ -1,11 +1,10 @@
 """Validate the Python flight simulator against RASAero II time-history exports.
 
-A reference case is a pair of files under input/rasaero_reference/:
+A reference case is a pair of files under paths.reference_dir:
     <name>.csv   RASAero 'View Data' export of the flight
     <name>.json  {"row": <SimRow dict>, "site": <launch site dict>}
-`python -m rpa reference` produces them through the RASAero backend (the VM
-worker); they can also be made by hand from any RASAero run whose inputs are
-known.
+`python -m rpa reference` produces them through the VM worker; any RASAero
+run with known inputs works too.
 
 The comparison is term by term so a disagreement points at its cause:
     mach     our Mach from RASAero's own velocity+altitude vs its Mach column  -> atmosphere
@@ -17,6 +16,7 @@ The comparison is term by term so a disagreement points at its cause:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +103,30 @@ def save_case(directory: Path, name: str, export_csv: Path, row: SimRow, site: d
     return dst
 
 
+def case_problem(case: RefCase, alt_offset_ft: float = 0.0) -> str | None:
+    """Why the stored .csv cannot be this case's flight, or None. RASAero
+    exports the grid row that is selected, so a mis-selected row stores
+    another flight's history under this case's name - without this check the
+    case fails as if the python backend were wrong."""
+    h = case.history
+    w0 = float(h["weight_lb"].iloc[0])
+    if abs(w0 - case.row.combined_wt_lb) > 0.1:
+        return f"export lifts off at {w0:.3f} lb but the case flew {case.row.combined_wt_lb:.3f} lb - the .csv is another flight's; re-run `rpa reference`"
+    if case.row.max_alt_ft:
+        ap = H.apogee(h)[0] - alt_offset_ft
+        if abs(ap - case.row.max_alt_ft) > 0.01 * case.row.max_alt_ft:
+            return f"export apogees at {ap:.0f} ft but RASAero reported {case.row.max_alt_ft:.0f} ft for the case - the .csv is another flight's; re-run `rpa reference`"
+    return None
+
+
+def duplicate_exports(cases: list[RefCase]) -> list[list[str]]:
+    """Groups of cases whose .csv files are byte-identical."""
+    by_hash: dict[str, list[str]] = {}
+    for c in cases:
+        by_hash.setdefault(hashlib.md5(c.csv.read_bytes()).hexdigest(), []).append(c.name)
+    return [names for names in by_hash.values() if len(names) > 1]
+
+
 def _pct(a: np.ndarray, b: np.ndarray, floor: float = 1e-9) -> np.ndarray:
     return 100.0 * np.abs(a - b) / np.maximum(np.abs(b), floor)
 
@@ -187,6 +211,50 @@ def compare(case: RefCase, be: PythonBackend, alt_offset_ft: float = 0.0) -> dic
     return rec
 
 
+def compare_history(case: RefCase, ours: pd.DataFrame, alt_offset_ft: float = 0.0) -> dict:
+    """Compare a full time history (the native engine's export) with the
+    case's VM export, column by column at RASAero's sample times. Same record
+    keys as compare() where they apply, so judge() and the report work."""
+    ref = case.history.copy()
+    if alt_offset_ft:
+        ref["altitude_ft"] = ref["altitude_ft"] - alt_offset_ft
+    rec = {"case": case.name, "booster": case.row.booster, "sep_delay_s": case.row.sep_delay_s, "ign_delay_s": case.row.ign_delay_s, "note": ""}
+    t = ref["time_s"].to_numpy()
+    to = ours["time_s"].to_numpy()
+    n = min(len(t), int(np.searchsorted(t, to[-1], side="right")))
+    vel = ref["velocity_fps"].to_numpy()
+    flying = (vel > 150.0)[:n]
+
+    def at_ref(col: str) -> np.ndarray:
+        return np.interp(t[:n], to, ours[col].to_numpy())
+
+    for col, key in (("mach", "mach"), ("cd", "cd"), ("weight_lb", "weight"), ("thrust_lb", "thrust"), ("altitude_ft", "altitude"), ("velocity_fps", "velocity"), ("drag_lb", "drag")):
+        if col not in ref or col not in ours:
+            continue
+        d = np.abs(at_ref(col) - ref[col].to_numpy()[:n])
+        rec[f"{key}_max_abs_err" + ("_lb" if key in ("weight", "thrust", "drag") else "_ft" if key == "altitude" else "_fps" if key == "velocity" else "")] = float(np.nanmax(d)) if n else np.nan
+        if key in ("cd", "drag"):
+            e = _pct(at_ref(col), ref[col].to_numpy()[:n], 0.05 if key == "cd" else 1.0)[flying]
+            rec[f"{key}_median_err_pct"] = float(np.median(e)) if len(e) else np.nan
+    t_bo_ref = H.burnout_time(ref)
+    t_bo_ours = H.burnout_time(ours)
+    rec["t_burnout_ref_s"], rec["t_burnout_ours_s"] = t_bo_ref, t_bo_ours
+    rec["t_sep_ref_s"], rec["t_sep_ours_s"] = H.separation_time(ref, after=t_bo_ref), H.separation_time(ours, after=t_bo_ours)
+    rec["t_ign_ref_s"], rec["t_ign_ours_s"] = H.ignition_time(ref, after=t_bo_ref), H.ignition_time(ours, after=t_bo_ours)
+    ap_ref, tap_ref = H.apogee(ref)
+    ap_ours, tap_ours = H.apogee(ours)
+    rec["apogee_ref_ft"], rec["apogee_ours_ft"] = ap_ref, ap_ours
+    rec["apogee_err_pct"] = 100.0 * (ap_ours - ap_ref) / ap_ref
+    rec["t_apogee_ref_s"], rec["t_apogee_ours_s"] = tap_ref, tap_ours
+    rec["mach_burnout_ref"] = H.value_at(ref, "mach", t_bo_ref)
+    rec["mach_burnout_ours"] = H.value_at(ours, "mach", t_bo_ours)
+    rec["mach_burnout_err"] = rec["mach_burnout_ours"] - rec["mach_burnout_ref"]
+    rec["max_mach_ref"], rec["max_mach_ours"] = float(ref["mach"].max()), float(ours["mach"].max())
+    rec["max_vel_ref_fps"], rec["max_vel_ours_fps"] = float(ref["velocity_fps"].max()), float(ours["velocity_fps"].max())
+    rec["_ours"] = ours
+    return rec
+
+
 def judge(rec: dict, tol: dict) -> tuple[bool, str]:
     fails = []
     if abs(rec.get("apogee_err_pct", 99)) > tol["apogee_tol_pct"]:
@@ -202,7 +270,7 @@ def judge(rec: dict, tol: dict) -> tuple[bool, str]:
     return (not fails), "; ".join(fails)
 
 
-def overlay_plot(case: RefCase, ours: pd.DataFrame, path: Path, alt_offset_ft: float = 0.0):
+def overlay_plot(case: RefCase, ours: pd.DataFrame, path: Path, alt_offset_ft: float = 0.0, label: str = "rpa python"):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -216,7 +284,7 @@ def overlay_plot(case: RefCase, ours: pd.DataFrame, path: Path, alt_offset_ft: f
             y = ref[col] - (alt_offset_ft if col == "altitude_ft" else 0.0)
             ax.plot(ref["time_s"], y, label="RASAero", lw=1.8)
         if col in ours:
-            ax.plot(ours["time_s"], ours[col], label="rpa python", lw=1.2, ls="--")
+            ax.plot(ours["time_s"], ours[col], label=label, lw=1.2, ls="--")
         ax.set_xlabel("time [s]")
         ax.set_ylabel(label)
         ax.grid(alpha=0.3)
@@ -227,12 +295,29 @@ def overlay_plot(case: RefCase, ours: pd.DataFrame, path: Path, alt_offset_ft: f
     plt.close(fig)
 
 
-def run_validation(cases: list[RefCase], be: PythonBackend, tol: dict, out_dir: Path, alt_offset_ft: float = 0.0, log=print) -> pd.DataFrame:
+def run_validation(cases: list[RefCase], be, tol: dict, out_dir: Path, alt_offset_ft: float = 0.0, log=print) -> pd.DataFrame:
+    """`be`: a PythonBackend (term-by-term comparison) or a
+    NativeRASAeroBackend (history vs history, the case's own motors)."""
+    from .native import NativeRASAeroBackend
+
+    native = isinstance(be, NativeRASAeroBackend)
+    label = "RASAero native" if native else "rpa python"
     out_dir.mkdir(parents=True, exist_ok=True)
+    for group in duplicate_exports(cases):
+        log(f"  {len(group)} cases share one export ({group[0]} .. {group[-1]}) - RASAero exported the same flight for each; re-run `rpa reference`")
     recs = []
     for c in cases:
+        bad_ref = case_problem(c, alt_offset_ft)
+        if bad_ref:
+            recs.append({"case": c.name, "booster": c.row.booster, "sep_delay_s": c.row.sep_delay_s, "ign_delay_s": c.row.ign_delay_s, "apogee_ref_ft": float(c.history["altitude_ft"].max()), "pass": False, "fail_reasons": bad_ref})
+            log(f"  {c.name}: BAD REFERENCE - {bad_ref}")
+            continue
         try:
-            rec = compare(c, be, alt_offset_ft)
+            if native:
+                be.load_motors([c.booster_eng, c.sustainer_eng])
+                rec = compare_history(c, be.history(c.row, c.name, site=c.site), alt_offset_ft)
+            else:
+                rec = compare(c, be, alt_offset_ft)
         except KeyError as e:
             # case's motors are not in the current set, and it has no .eng copies
             why = f"motor not available: {e} (the motor set changed; re-export the reference flights)"
@@ -242,9 +327,9 @@ def run_validation(cases: list[RefCase], be: PythonBackend, tol: dict, out_dir: 
         ours = rec.pop("_ours")
         ok, why = judge(rec, tol)
         rec["pass"], rec["fail_reasons"] = ok, why
-        overlay_plot(c, ours, out_dir / f"{c.name}.png", alt_offset_ft)
+        overlay_plot(c, ours, out_dir / f"{c.name}.png", alt_offset_ft, label=label)
         recs.append(rec)
-        log(f"  {c.name}: apogee {rec['apogee_ours_ft']:.0f} vs {rec['apogee_ref_ft']:.0f} ft ({rec['apogee_err_pct']:+.2f}%), Mach@burnout {rec['mach_burnout_ours']:.3f} vs {rec['mach_burnout_ref']:.3f}, CD med err {rec.get('cd_median_err_pct', float('nan')):.1f}%, atm Mach err {rec['mach_max_abs_err']:.3f}, weight err {rec['weight_max_abs_err_lb']:.2f} lb -> {'PASS' if ok else 'FAIL: ' + why}")
+        log(f"  {c.name}: apogee {rec['apogee_ours_ft']:.0f} vs {rec['apogee_ref_ft']:.0f} ft ({rec['apogee_err_pct']:+.3f}%), Mach@burnout {rec['mach_burnout_ours']:.3f} vs {rec['mach_burnout_ref']:.3f}, CD med err {rec.get('cd_median_err_pct', float('nan')):.2f}%, Mach err {rec['mach_max_abs_err']:.4f}, weight err {rec['weight_max_abs_err_lb']:.3f} lb -> {'PASS' if ok else 'FAIL: ' + why}")
     df = pd.DataFrame(recs)
     df.to_csv(out_dir / "validation.csv", index=False)
     return df

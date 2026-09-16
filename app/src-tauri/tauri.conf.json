@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Rocket Profile Analysis",
+  "version": "1.0.0",
+  "identifier": "com.rocketprofileanalysis.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../shell"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis"
+    ],
+    "category": "Utility",
+    "shortDescription": "Two-stage flight profile optimizer (OpenRocket + RASAero II)",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../build/dist/rpa-service": "rpa-service",
+      "../../build/dist/rasaero": "rasaero",
+      "../../build/dist/template": "template"
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQxMUY3MkFBMTYzOUFGOUQKUldTZHJ6a1dxbklmMFhjMSswcHNZbDhUM1QzSkNzanh5WEtoem5heFZwcVNiT0NReStGRER5UncK",
+      "endpoints": [
+        "https://github.com/rebigex/rocket-profile-analysis/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

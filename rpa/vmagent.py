@@ -1,6 +1,5 @@
-"""UTM guest-agent primitives: talk to the Windows VM from the Mac without
-any shared folder (`utmctl` file push / pull / exec through the QEMU guest
-agent). Used by the job transport (rpa.jobs) and the GUI's VM control.
+"""UTM guest-agent primitives (`utmctl` file push / pull / exec), used by
+the job transport (rpa.jobs) and the GUI's VM control.
 
 Facts about utmctl (measured on UTM 4.x):
   * `file push` / `file pull` are byte-exact, ~0.5 MB/s; a missing file or

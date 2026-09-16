@@ -38,7 +38,11 @@ REQUIRED = ("time_s", "mach", "thrust_lb", "weight_lb", "velocity_fps", "altitud
 
 
 def read_rasaero_export(path: str | Path) -> pd.DataFrame:
-    df = pd.read_csv(path)
+    return normalize_export(pd.read_csv(path), str(path))
+
+
+def normalize_export(df: pd.DataFrame, source: str = "export") -> pd.DataFrame:
+    """RASAero's 'View Data' columns -> the normalized names, numeric."""
     df.columns = [c.strip() for c in df.columns]
     norm = {}
     lowered = {k.lower(): v for k, v in RASAERO_COLUMNS.items()}
@@ -57,7 +61,7 @@ def read_rasaero_export(path: str | Path) -> pd.DataFrame:
     df = df.rename(columns=norm)
     missing = [c for c in REQUIRED if c not in df.columns]
     if missing:
-        raise ValueError(f"{path}: export is missing columns {missing}; found {list(df.columns)}")
+        raise ValueError(f"{source}: export is missing columns {missing}; found {list(df.columns)}")
     for c in df.columns:
         if c != "stage":
             df[c] = pd.to_numeric(df[c], errors="coerce")

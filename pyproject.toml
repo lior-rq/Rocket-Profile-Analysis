@@ -5,22 +5,23 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rocket-profile-analysis"
 version = "1.0"
-description = "Two-stage flight profile optimizer (OpenRocket + RASAero II SOP automation) with a local GUI"
+description = "Two-stage flight profile optimizer on OpenRocket + RASAero II, with a local GUI"
 requires-python = ">=3.11"
-dependencies = ["jpype1>=1.5", "numpy>=1.26", "pandas>=2.2", "matplotlib>=3.8", "pyyaml>=6", "tabulate>=0.9"]
+dependencies = ["jpype1>=1.5", "numpy>=1.26", "pandas>=2.2", "matplotlib>=3.8", "pyyaml>=6", "tabulate>=0.9", "fastapi>=0.115", "uvicorn>=0.30"]
 
 [project.optional-dependencies]
 ric = ["scipy>=1.11", "scikit-fmm>=2023.4", "scikit-image>=0.22"]  # openMotor's motorlib needs these to simulate .ric designs
+dev = ["pytest>=8", "httpx>=0.27", "pyinstaller>=6.10"]
 
 [project.scripts]
 rpa = "rpa.cli:main"
 
 [tool.setuptools]
-packages = ["rpa", "rpa.gui"]
+packages = ["rpa", "rpa.gui", "rpa.service"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-"rpa.gui" = ["static/*"]
+"rpa.service" = ["ui/*", "ui/assets/*"]
 
 [tool.ruff]
 line-length = 240

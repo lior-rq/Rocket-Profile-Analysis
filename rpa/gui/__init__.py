@@ -1,1 +1,1 @@
-"""Local web GUI for the pipeline: python -m rpa gui"""
+"""GUI helpers used by rpa.service: state, design assets, VM control, yaml edits."""

@@ -8,15 +8,12 @@ Windows VM.
         export.csv      'View Data' export, export jobs only (worker)
         done.json       status (worker); worker.log / *.png for debugging
 
-Two transports carry the folder to the VM and back:
-  share  the repo is mounted in the VM (Z:) and both sides read/write the
-         folder directly (the WebDAV share drops out and caches, hence the
-         retries everywhere);
-  agent  no shared folder: the inputs are pushed into C:/rpa/jobs/<name>
-         with UTM's guest agent, the worker runs from local disk, and the
-         results come back as a zip when done.zip appears (rpa.vmagent).
-In manual mode nobody runs the worker: we print what to do in RASAero and wait
-for the result files to show up.
+Transports:
+  share  the repo is mounted in the VM (Z:) and both sides use the folder
+         directly (the WebDAV share drops out and caches, hence the retries);
+  agent  no shared folder: inputs are pushed into C:/rpa/jobs/<name> with
+         UTM's guest agent and the results come back as done.zip (rpa.vmagent).
+Manual mode prints what to do in RASAero and waits for the result files.
 """
 
 from __future__ import annotations

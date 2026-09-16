@@ -1,19 +1,16 @@
 """Booster characterization and the transonic-separation rules.
 
-Two requested profile types:
-  subsonic    - the booster (stack) never exceeds Mach 0.9; separation is then
-                free of the transonic band by construction.
-  supersonic  - the stack exceeds Mach 1.2 and separation happens while still
-                above Mach 1.2.
-Optional, off by default (not one of the two requested profiles):
-  decel_subsonic - the stack goes supersonic during boost, coasts *attached*
-                back down through the transonic band, and separates once below
-                Mach 0.9.
+Profiles:
+  subsonic    - the stack never exceeds Mach 0.9; separation is free of the
+                transonic band by construction.
+  supersonic  - the stack exceeds Mach 1.2 and separates while still above it.
+  decel_subsonic (optional, off by default) - the stack goes supersonic,
+                coasts attached back through the transonic band, and separates
+                below Mach 0.9.
 
-RASAero measures Booster1SeparationDelay from booster burnout and
-SustainerIgnitionDelay from *separation* (verified from its exports); the
-characterization run re-checks that from the exported history (Stage column /
-thrust reappearing) so a change of convention is caught.
+RASAero counts Booster1SeparationDelay from booster burnout and
+SustainerIgnitionDelay from separation. The characterization run re-checks
+that from the exported history (Stage column / thrust reappearing).
 """
 
 from __future__ import annotations

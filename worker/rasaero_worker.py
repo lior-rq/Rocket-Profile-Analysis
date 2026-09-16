@@ -1,8 +1,7 @@
 r"""RASAero II job worker - runs INSIDE the Windows VM.
 
-Polls a jobs folder on the shared drive (Z:\jobs) for job.json files written by
-the Mac-side pipeline, drives RASAero II with pywinauto to run / export them,
-and writes done.json when finished.
+Polls a jobs folder for job.json files written by the Mac side, drives
+RASAero II with pywinauto to run / export them, and writes done.json.
 
     python rasaero_worker.py --jobs Z:\jobs --repo Z:\            (daemon)
     python rasaero_worker.py --jobs Z:\jobs --repo Z:\ --once     (one job, then exit)
@@ -16,8 +15,7 @@ Job types (see rpa/jobs.py):
     aero_export  : Aero Plots CD-vs-Mach export; spec.mach_alt_items lets one job
                    cover several Mach-Alt altitudes of the same nozzle
 
-GUI details (control names, key sequences, waits) live in worker_config.json
-next to this file so they can be tuned without touching the code.
+GUI details (control names, key sequences, waits) live in worker_config.json.
 """
 
 from __future__ import annotations
@@ -43,7 +41,7 @@ except ImportError:  # pragma: no cover - documented in worker/README.md
     print("pywinauto is required inside the VM:  python -m pip install pywinauto")
     raise
 
-WORKER_VERSION = 42  # bump when editing; the job log shows which version ran
+WORKER_VERSION = 43  # bump when editing; the job log shows which version ran
 RELOAD_EXIT_CODE = 3  # 'restart me' for run_worker.py
 
 HERE = Path(__file__).resolve().parent
@@ -179,6 +177,7 @@ class RASAero:
         self.app: Application | None = None
         self.main = None
         self._shots = 0
+        self._grid_focused = False
 
     # ---- process ----------------------------------------------------------
     @staticmethod
@@ -850,6 +849,7 @@ class RASAero:
         if fs is None:
             self.log("flight-sim window did not appear; continuing with keyboard focus")
         self.fs = fs
+        self._grid_focused = False
         return fs
 
     def open_aero_plots(self) -> int | None:
@@ -871,29 +871,50 @@ class RASAero:
         self.log(f"rerun all: waiting >= {min_wait:.0f}s for {n_rows} rows")
         self.wait_idle(min_wait, self.cfg["sim_max_wait_s"])
 
-    def open_view_data(self, row: int = 0) -> int | None:
-        """Open the time-history window for grid row `row` of the flight-sim
-        form and return its HWND. UIA is used only to locate the row's first
-        cell *before* anything opens; the button cell is reached with the
-        keyboard (End = last column, Space = press) and everything after that
-        is Win32 only - the data window holds thousands of rows and any UIA
-        call while it is open times out (0x80131505)."""
-        target = self.fs if self.fs is not None else self.main.wrapper_object()
-        before = {h for h, _, _ in self.enum_windows()}
+    def focus_grid(self, target) -> bool:
+        """Put keyboard focus in the flight-sim grid, once per form, by
+        clicking row 0's 'Motor(s) Loaded' cell. The cell is located with UIA
+        before anything opens - the data window holds thousands of rows and
+        any UIA call while it is open times out (0x80131505)."""
+        if self._grid_focused:
+            return True
         rect = None
         try:
             for item in target.descendants(control_type="DataItem"):
-                if (item.window_text() or "").strip() == f"Motor(s) Loaded Row {row}":
+                if (item.window_text() or "").strip() == "Motor(s) Loaded Row 0":
                     rect = item.rectangle()
                     break
         except Exception as e:
             self.log(f"view data: grid walk failed: {e}")
         if rect is None:
-            self.log(f"view data: row {row} not found in the grid")
-            return None
+            self.log("view data: row 0 not found in the grid")
+            self.screenshot("grid-row0-missing", force=True)
+            return False
         self.raw_click(target, (rect.left + 10, (rect.top + rect.bottom) // 2))
         time.sleep(0.5)
-        self.keys("{END}", target=target)  # last column = the ViewData button cell
+        self._grid_focused = True
+        return True
+
+    def open_view_data(self, row: int = 0) -> int | None:
+        """Open the time-history window for grid row `row` of the flight-sim
+        form and return its HWND.
+
+        The row MUST be reached with the keyboard: Ctrl+Home (row 0, first
+        column), DOWN per row, End (last column = the ViewData button cell),
+        Space (press). End scrolls the grid sideways, which leaves the UIA
+        rectangles of the earlier columns' cells stale - a click at a located
+        cell then misses, the current cell stays where the last export left
+        it, and every row after the first exports row 0's flight."""
+        target = self.fs if self.fs is not None else self.main.wrapper_object()
+        before = {h for h, _, _ in self.enum_windows()}
+        if not self.focus_grid(target):
+            return None
+        self.keys(self.cfg["keys"]["view_data_prefix"], target=target)
+        time.sleep(0.3)
+        if row:
+            self.keys("{DOWN %d}" % row, target=target, pause=0.05)
+            time.sleep(0.3)
+        self.keys("{END}", target=target)
         time.sleep(0.3)
         self.keys("{SPACE}", target=target)
         self.wait_idle(self.cfg["long_delay_s"], self.cfg["sim_max_wait_s"])
@@ -904,7 +925,7 @@ class RASAero:
                 hwnd = new[0][0]
                 self.heavy_handles.add(hwnd)
                 self.wait_responsive(hwnd, self.cfg["sim_max_wait_s"])
-                self.log(f"view data window {new[0][1]!r} {hwnd:#x}")
+                self.log(f"view data window {new[0][1]!r} {hwnd:#x} (row {row})")
                 return hwnd
             time.sleep(0.5)
         self.log("view data window did not appear")
@@ -978,6 +999,7 @@ class RASAero:
         RASAero session. One Rerun All already covers every row, so a batch
         of N reference flights costs one job's worth of overhead instead of
         N - see rpa.pipeline.stage_reference / worker.batch_reference_export."""
+        seen: dict[str, int] = {}
         for i, csv_path in enumerate(csv_paths):
             vd = self.open_view_data(i)
             if vd is None:
@@ -987,6 +1009,13 @@ class RASAero:
             finally:
                 self.close_hwnd(vd)
                 time.sleep(self.cfg["short_delay_s"])
+            # two rows of a reference batch are never the same flight: an
+            # identical export means the grid row was not selected
+            digest = hashlib.md5(Path(csv_path).read_bytes()).hexdigest()
+            if digest in seen:
+                self.screenshot("view-data-same-row", force=True)
+                raise RuntimeError(f"row {i} exported the same history as row {seen[digest]} - the View Data row was not selected")
+            seen[digest] = i
 
     def save_as_dialog_open(self) -> bool:
         """A common file dialog with a Save button - not a message box,

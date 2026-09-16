@@ -1,10 +1,9 @@
 """Edit scalar values in config.yaml without losing its comments.
 
-PyYAML round-trips lose every comment, and config.yaml is documentation as
-much as configuration, so the GUI edits it line by line: find the parent
-block by indentation, replace the value on the key's line, keep whatever
-trailing comment was there. Anything it cannot express (a key nested deeper
-than the file already has) is appended as a new line inside the block.
+PyYAML round-trips drop comments, so the GUI edits line by line: find the
+parent block by indentation, replace the value on the key's line, keep the
+trailing comment. A key the file does not have yet is appended inside its
+block.
 """
 
 from __future__ import annotations

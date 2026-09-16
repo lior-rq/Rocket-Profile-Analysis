@@ -1,15 +1,11 @@
-"""Vehicle mass model: the OpenRocket model supplies the *shape* of the mass
-distribution (how the dry mass splits between stages, where the CGs are,
-where the propellant sits) and the .eng files the propellant masses. The
-absolute dry mass can be overridden with `mass_model.hardware_mass_lb`
-(default 180 lb): the OpenRocket dry masses of both stages are scaled by one
-factor so that the whole two-stage vehicle weighs that much without
-propellant, and the loaded weights / CGs RASAero needs are recombined from
-the scaled structure and the unscaled propellant. `null` keeps the .ork
-masses as they are.
+"""Vehicle mass model. The .ork supplies the mass distribution (dry-mass
+split between stages, CGs, propellant positions), the .eng files the
+propellant masses. `mass_model.hardware_mass_lb` overrides the absolute dry
+mass: both stages' dry masses are scaled by one factor so the vehicle weighs
+that much empty, then the loaded weights / CGs are recombined. `null` keeps
+the .ork masses.
 
-Pure arithmetic, no JVM: everything OpenRocket-specific lives in
-rpa.openrocket, which just hands over the four mass/CG pairs.
+Pure arithmetic; rpa.openrocket hands over the four mass/CG pairs.
 """
 
 from __future__ import annotations

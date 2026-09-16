@@ -10,7 +10,7 @@ import json
 import time
 from pathlib import Path
 
-_MOTORS = ["paths.boosters", "paths.sustainers", "paths.boosters_dir", "paths.sustainers_dir", "paths.exclude_boosters", "paths.exclude_sustainers", "ric"]
+_MOTORS = ["paths.boosters", "paths.sustainers", "paths.exclude_boosters", "paths.exclude_sustainers", "ric"]
 _MASS = _MOTORS + ["paths.ork", "paths.cdx1", "mass_model", "sustainer_selection", "characterization", "launch_site", "python_sim", "rasaero.sustainer_nozzle_in", "rasaero.booster_nozzle_in", "surface_finish"]
 _CHAR = _MASS + ["profiles.subsonic_max_mach", "profiles.supersonic_min_mach", "profiles.mach_margin", "backend", "paths.aero_dir"]
 _SEARCH = _CHAR + ["target", "profiles"]
@@ -60,7 +60,7 @@ def input_files(cfg, stage: str) -> list[Path]:
             else:
                 files.append(src)
     if stage != "motors":
-        files += [cfg.path("ork"), cfg.path("cdx1")]
+        files += [p for k in ("ork", "cdx1") if (p := cfg.file(k))]
     if stage not in ("motors", "mass"):
         aero = cfg.path("aero_dir")
         if aero.exists():

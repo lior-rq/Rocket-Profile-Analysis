@@ -1,11 +1,11 @@
 """Aerodynamic coefficient tables exported from RASAero II ("Aero Plots" ->
 export), used by the Python flight simulator.
 
-The tables depend only on the vehicle geometry, so they are produced once per
-vehicle revision and stored under input/aero/. RASAero evaluates them at a
-fixed altitude (the <MachAlt> field) and, for power-on drag, at the nozzle
-exit diameter of the configuration - so a set of files at several altitudes
-and nozzle diameters is exported and we interpolate between them.
+The tables depend only on the geometry, so they are exported once per
+vehicle revision into paths.aero_dir. RASAero evaluates them at a fixed
+altitude (<MachAlt>) and, for power-on drag, at the configuration's nozzle
+exit diameter, so files at several altitudes and nozzle sizes are exported
+and interpolated between.
 
 File naming (case-insensitive):   <config>_alt<ft>[_noz<in>].csv
     config : stack      (booster attached, i.e. the full two-stage vehicle)

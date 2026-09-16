@@ -1,16 +1,14 @@
 """openMotor `.ric` motor designs as a motor source.
 
-A `.ric` is a *design* (grains, nozzle, propellant), not a thrust curve, so
-each one is simulated with openMotor's own `motorlib` and written out as a
-one-motor RASP block; the loader then reads those like any other `.eng`.
-The simulation of a design is cached (output/motors/ric_cache/<stem>.eng +
-.json with the design's hash and the timestep), so it runs once per design.
+A `.ric` is a design (grains, nozzle, propellant), not a thrust curve. Each
+one is simulated with openMotor's `motorlib` and written as a one-motor RASP
+block, cached under output/motors/ric_cache/<stem>.eng (+ .json with the
+design hash and timestep). The loader reads those like any other `.eng`.
 
-motorlib is found in this order: `ric.openmotor` in config.yaml, the
-OPENMOTOR_PATH environment variable, an installed `motorlib`, or a vendored
-copy in a sibling project (…/vendor/openMotor). Its compiled perimeter finder
-(`mathlib`) is only needed for non-BATES grains; when it is not built for
-this Python a stand-in is installed that fails loudly for those grains.
+motorlib lookup order: `ric.openmotor` in config.yaml, OPENMOTOR_PATH, an
+installed `motorlib`, or …/vendor/openMotor. Its compiled perimeter finder
+(`mathlib`) is only needed for non-BATES grains; without it a stand-in fails
+loudly for those grains.
 """
 
 from __future__ import annotations

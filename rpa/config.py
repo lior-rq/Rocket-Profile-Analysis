@@ -10,20 +10,20 @@ import yaml
 
 DEFAULTS: dict[str, Any] = {
     "paths": {
-        "ork": "input/OpenRocket (.ork)/ORK_1.3.ork",
-        "cdx1": "input/RASAero (.CDX1)/RAS_v1.3.CDX1",
-        "boosters": [],  # folders/.eng files, candidates. Empty -> boosters_dir
-        "sustainers": [],  # same, for sustainer candidates. Empty -> sustainers_dir
-        "boosters_dir": "input/Motor Files/optimized-boosters-v1.eng",  # legacy single-source form
-        "sustainers_dir": "input/Motor Files/optimized-sustainers-v1",
+        "ork": None,  # OpenRocket model; set from the GUI or here
+        "cdx1": None,  # RASAero model
+        "boosters": [],  # folders and/or .eng/.ric files, anywhere on disk
+        "sustainers": [],
         "exclude_boosters": [],  # motor labels dropped after loading (single motors inside a multi-motor file)
         "exclude_sustainers": [],
         "output_dir": "output",
         "jobs_dir": "jobs",
         "aero_dir": "input/aero",
         "reference_dir": "input/rasaero_reference",
-        "openrocket_jar": "/Applications/OpenRocket.app/Contents/Resources/app/jar/OpenRocket-24.12.jar",
-        "jvm": "/Applications/OpenRocket.app/Contents/Resources/jre.bundle/Contents/Home/lib/server/libjvm.dylib",
+        "rasaero_host": "auto",  # rasaero-host (native/RasaeroHost build); auto = the repo's Release build
+        "rasaero_engine": "vendor/rasaero/RASAeroEngine.dll",  # patched RASAero II engine (tools/rasaero_fetch.py)
+        "openrocket_jar": "auto",  # auto = the installed OpenRocket (rpa.platform.find_openrocket)
+        "jvm": "auto",
     },
     "target": {"apogee_ft": 45000.0, "tolerance_ft": 100.0},
     "profiles": {
@@ -40,6 +40,10 @@ DEFAULTS: dict[str, Any] = {
         "ignition_delay_max_s": 15.0,
         "coarse_step_s": 1.0,
         "max_refine_rounds": 4,
+        # with several separation delays per (booster, sustainer, profile): fly the
+        # middle one on the full ignition grid first, the others only around its
+        # crossings (plus both ends; gaps with a sign change are filled in)
+        "pilot_grid": True,
         "min_ignition_velocity_fps": 0.0,
     },
     "characterization": {"separation_delay_s": 15.0, "ignition_delay_s": 15.0},
@@ -67,6 +71,15 @@ DEFAULTS: dict[str, Any] = {
         "sustainer_nozzle_in": None,  # null -> from the .eng comment header
         "booster_nozzle_in": None,
         "mach_alt_via_cdx1": False,  # opt-in: pre-write <MachAlt> instead of the dialog - verify on the VM
+        "engine": "auto",  # where RASAero runs for aero tables, references and confirm: auto (native if built) | native | vm
+    },
+    "native": {  # RASAero's engine in-process (rpa.native): backend rasaero_native / rasaero.engine native
+        "dt_s": 0.01,
+        "timeout_s": 600.0,
+        "rows_per_batch": 200,
+        "workers": "auto",  # host processes for search batches: auto = every core (cores - 1 with backend: python), 1 = serial
+        "shared": True,  # keep the host pool alive across stages / runs (one per process)
+        "warm_start": True,  # the app starts the hosts and the JVM at launch, in the background
     },
     "mass_model": {
         "method": "openrocket",  # openrocket | manual
@@ -80,7 +93,7 @@ DEFAULTS: dict[str, Any] = {
             "booster_prop_cg_in": None,
         },
     },
-    "backend": "python",  # python (RASAero tables) | rasaero (VM GUI) | openrocket (preview)
+    "backend": "python",  # python (RASAero tables) | rasaero_native (RASAero's engine, no VM) | rasaero (VM GUI) | openrocket (preview)
     "python_sim": {
         "dt_s": 0.01,
         "max_time_s": 400.0,
@@ -135,18 +148,27 @@ def _merge(base: dict, over: dict) -> dict:
 class Config(dict):
     root: Path
 
-    def path(self, key: str) -> Path:
-        p = Path(self["paths"][key])
+    def resolve(self, p: str | Path) -> Path:
+        p = Path(p).expanduser()
         return p if p.is_absolute() else self.root / p
+
+    def file(self, key: str) -> Path | None:
+        """paths.<key>, resolved; None when not set."""
+        v = self["paths"].get(key)
+        return self.resolve(v) if v not in (None, "") else None
+
+    def path(self, key: str) -> Path:
+        p = self.file(key)
+        if p is None:
+            raise FileNotFoundError(f"paths.{key} is not set (config.yaml or the GUI's Inputs page)")
+        return p
 
     def motor_sources(self, kind: str) -> list[Path]:
         """kind: 'boosters' | 'sustainers' -> the folders/files to load, resolved."""
-        lst = self["paths"].get(kind)
+        lst = self["paths"].get(kind) or []
         if isinstance(lst, (str, Path)):
             lst = [lst]
-        if not lst:
-            lst = [self["paths"][f"{kind}_dir"]]
-        return [Path(x) if Path(x).is_absolute() else self.root / x for x in lst]
+        return [self.resolve(x) for x in lst]
 
     def excluded(self, kind: str) -> set[str]:
         """Motor labels dropped after loading (paths.exclude_<kind>)."""
@@ -159,6 +181,18 @@ class Config(dict):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def openrocket(self) -> tuple[Path | None, Path | None]:
+        """(jar, jvm): config paths when set, else the installed OpenRocket."""
+        from . import platform as PL
+
+        jar, jvm = self["paths"].get("openrocket_jar"), self["paths"].get("jvm")
+        found = None
+        if jar in (None, "", "auto") or jvm in (None, "", "auto"):
+            found = PL.find_openrocket()
+        jar_p = self.resolve(jar) if jar not in (None, "", "auto") else (Path(found["jar"]) if found and found["jar"] else None)
+        jvm_p = self.resolve(jvm) if jvm not in (None, "", "auto") else (Path(found["jvm"]) if found and found["jvm"] else None)
+        return jar_p, jvm_p
+
     def hardware_mass_lb(self) -> float | None:
         """mass_model.hardware_mass_lb; null / "" = use the .ork masses as-is."""
         hw = self["mass_model"].get("hardware_mass_lb")
@@ -169,6 +203,8 @@ def load_config(path: str | Path | None = None, root: str | Path | None = None, 
     root = Path(root or Path.cwd()).resolve()
     data = {}
     cfg_path = Path(path) if path else root / "config.yaml"
+    if not path and not cfg_path.exists():
+        cfg_path = root / "config.example.yaml"  # fresh checkout
     if cfg_path.exists():
         data = yaml.safe_load(cfg_path.read_text()) or {}
     if isinstance(data.get("profiles"), dict):

@@ -28,8 +28,8 @@ def test_event_detection():
     assert abs(H.first_time_below(h, "mach", 0.9, after=6.0) - (6.0 + 0.2 / 0.08)) < 0.05
 
 
-def test_characterize_and_eligibility_transonic_booster():
-    cfg = load_config(root=".")
+def test_characterize_and_eligibility_transonic_booster(tmp_path):
+    cfg = load_config(root=tmp_path)
     cfg["profiles"]["include_decel_subsonic"] = True
     cfg["profiles"]["separation_delay_max_s"] = 15.0  # the decel variant needs a late separation
     h = synthetic_history(sep=15, ign=15)
@@ -41,8 +41,8 @@ def test_characterize_and_eligibility_transonic_booster():
     assert el["decel_subsonic"].eligible and el["decel_subsonic"].sep_min_s >= 3.1
 
 
-def test_eligibility_supersonic_window_is_clipped_by_physics():
-    cfg = load_config(root=".")
+def test_eligibility_supersonic_window_is_clipped_by_physics(tmp_path):
+    cfg = load_config(root=tmp_path)
     cfg["profiles"].update({"separation_delay_min_s": 0.0, "separation_delay_max_s": 1.0})
     h = synthetic_history(m_bo=1.3, peak=1.4)  # 1.3 at burnout, falls below 1.25 after 0.625 s
     c = characterize("b", h, cfg, 1.0, 3.0, rod_length_ft=None)
@@ -103,8 +103,8 @@ class FakeMotorSet:
         return next(m for m in self.sustainer_candidates if m.label == label)
 
 
-def test_search_brackets_and_refines():
-    cfg = load_config(root=".")
+def test_search_brackets_and_refines(tmp_path):
+    cfg = load_config(root=tmp_path)  # built-in defaults, not the live config
     cfg["target"] = {"apogee_ft": 45000.0, "tolerance_ft": 10.0}
     mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S")}
     elig = [ProfileEligibility("B", "supersonic", True, 1.0, 1.0, sustainer="S"), ProfileEligibility("B", "subsonic", False, 1.0, 1.0, sustainer="S")]
@@ -119,8 +119,8 @@ def test_search_brackets_and_refines():
     assert be.calls <= 1 + cfg["profiles"]["max_refine_rounds"]
 
 
-def test_search_separation_grid_prefers_shortest_coast():
-    cfg = load_config(root=".")
+def test_search_separation_grid_prefers_shortest_coast(tmp_path):
+    cfg = load_config(root=tmp_path)
     cfg["target"] = {"apogee_ft": 45000.0, "tolerance_ft": 10.0}
     cfg["profiles"].update({"separation_step_s": 0.5, "ignition_delay_min_s": 1.0, "ignition_delay_max_s": 15.0})
     mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S")}
@@ -136,8 +136,27 @@ def test_search_separation_grid_prefers_shortest_coast():
     assert d.extra["separation_delays_tried"] == [0.0, 0.5, 1.0] and all(len(x) == 3 for x in d.extra["samples"])
 
 
-def test_search_reports_overpowered_hint():
-    cfg = load_config(root=".")
+def test_search_pilot_grid_flies_fewer_rows_same_design(tmp_path):
+    """Several separation delays per key: the neighbours fly a narrowed grid
+    and still solve to the same design as the full grid."""
+    cfg = load_config(root=tmp_path)
+    cfg["target"] = {"apogee_ft": 45000.0, "tolerance_ft": 10.0}
+    cfg["profiles"].update({"separation_step_s": 0.5, "ignition_delay_min_s": 1.0, "ignition_delay_max_s": 15.0})
+    mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S")}
+    elig = [ProfileEligibility("B", "supersonic", True, 0.0, 2.0, sustainer="S")]  # 5 separation delays
+    runs = {}
+    for pilot in (False, True):
+        cfg["profiles"]["pilot_grid"] = pilot
+        be = FakeBackend()
+        srch = ApogeeSearch(cfg, be, FakeMotorSet(), mass, elig, log=lambda *_: None)
+        d = srch.run()[0]
+        runs[pilot] = (d.status, d.sep_delay_s, round(d.ign_delay_s, 2), len(srch.all_rows))
+    assert runs[True][:3] == runs[False][:3] == ("solved", 0.0, runs[False][2])
+    assert runs[True][3] < 0.7 * runs[False][3]
+
+
+def test_search_reports_overpowered_hint(tmp_path):
+    cfg = load_config(root=tmp_path)
     cfg["target"] = {"apogee_ft": 35000.0, "tolerance_ft": 10.0}
     mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S")}
     elig = [ProfileEligibility("B", "supersonic", True, 1.0, 1.0, sustainer="S")]
@@ -145,9 +164,9 @@ def test_search_reports_overpowered_hint():
     assert designs[0].status == "overpowered" and "shortest allowed coast" in designs[0].hint and "separation_delay_min_s" in designs[0].hint
 
 
-def test_search_keeps_sustainers_apart():
+def test_search_keeps_sustainers_apart(tmp_path):
     """Two sustainers with the same booster are two designs, each flown with its own motor."""
-    cfg = load_config(root=".")
+    cfg = load_config(root=tmp_path)
     cfg["target"] = {"apogee_ft": 45000.0, "tolerance_ft": 10.0}
     mass = {("B", "S"): MassRow("B", 54.0, 75.0, 124.0, 115.0, 15.0, sustainer="S"), ("B", "S2"): MassRow("B", 55.0, 75.0, 125.0, 115.0, 15.0, sustainer="S2")}
     elig = [ProfileEligibility("B", "supersonic", True, 1.0, 1.0, sustainer="S"), ProfileEligibility("B", "supersonic", True, 1.0, 1.0, sustainer="S2")]

@@ -1,0 +1,73 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - if: runner.os == 'macOS'
+        run: brew install msitools
+      - run: pip install -r requirements.txt && pip install -e .
+      - name: Tag matches pyproject version
+        shell: bash
+        run: |
+          v=$(python build/sync_version.py)
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$v"; exit 1; }
+      - name: RASAero engine (cached)
+        id: engine
+        uses: actions/cache@v4
+        with:
+          path: vendor/rasaero
+          key: rasaero-1.0.2.0-${{ runner.os }}-${{ hashFiles('tools/rasaero_fetch.py', 'native/RasaeroPatch/**') }}
+      - if: steps.engine.outputs.cache-hit != 'true'
+        run: python tools/rasaero_fetch.py
+      - if: runner.os == 'macOS'
+        run: bash build/build_service.sh
+      - if: runner.os == 'Windows'
+        run: powershell -File build/build_service.ps1
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: "Rocket Profile Analysis ${{ github.ref_name }}"
+          releaseBody: "See docs/INSTALL.md for first-launch notes (Gatekeeper / SmartScreen)."
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target ${{ matrix.target }}

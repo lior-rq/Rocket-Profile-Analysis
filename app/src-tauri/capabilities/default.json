@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "The app window: the UI is served by the local service",
+  "windows": ["main"],
+  "remote": { "urls": ["http://127.0.0.1:*", "http://localhost:*"] },
+  "permissions": ["core:default", "core:window:allow-set-focus", "dialog:default", "process:default", "shell:allow-open", "updater:default"]
+}

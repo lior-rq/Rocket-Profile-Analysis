@@ -1,11 +1,9 @@
 """Planar 3-DOF (point mass, gravity turn) two-stage trajectory integrator.
 
-This is the Mac-native replacement for driving the RASAero GUI inside the
-search loop. It uses RASAero's own aerodynamic tables (rpa.aero), RASAero's
-launch-site atmosphere conventions (rpa.atmosphere), the .eng thrust curves,
-and the mass numbers the pipeline already produces from OpenRocket. It is
-validated term-by-term against RASAero time-history exports (rpa.validate)
-rather than assumed to be right.
+Replaces the RASAero GUI inside the search loop. Uses RASAero's own aero
+tables (rpa.aero), its launch-site atmosphere conventions (rpa.atmosphere),
+the .eng thrust curves and the OpenRocket mass numbers. rpa.validate checks
+it term by term against RASAero exports.
 
 Model
   * zero wind, zero angle of attack: thrust and drag act along the velocity

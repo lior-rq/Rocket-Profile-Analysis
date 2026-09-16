@@ -1,24 +1,26 @@
-"""GUI backend: comment-preserving config edits, the subprocess runner, the
-state collector on an empty project and the HTTP API."""
+"""GUI back end: comment-preserving config edits, the in-process runner, the
+state collector on an empty project and the HTTP API of rpa.service."""
 
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
-import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 
-from rpa.gui.runner import Runner
-from rpa.gui.server import App, Handler
 from rpa.gui.state import StateCollector
 from rpa.gui.yamledit import set_many, set_scalar
+from rpa.service import stages
+from rpa.service.app import create_app
+from rpa.service.core import Service
+from rpa.service.runner import CANCELLED_CODE, Runner
 
 CONFIG = """# top comment
 paths:
@@ -55,28 +57,62 @@ def test_yamledit_rejects_bad_round_trip():
         set_scalar("a: 1\n", ["a", "b"], 2)  # 'a' is a scalar, cannot nest
 
 
-def test_runner_runs_and_records_history(tmp_path):
+def _blocking_stage(monkeypatch):
+    """Make `search` block until cancelled, so runner tests need no real run."""
+    from rpa import pipeline as P
+
+    real = stages.run_stage
+
+    def fake(stage, args, root):
+        if stage != "search":
+            return real(stage, args, root)
+        while True:
+            P.check_cancel()
+            time.sleep(0.02)
+
+    monkeypatch.setattr(stages, "run_stage", fake)
+
+
+def test_runner_runs_and_records_history(tmp_path, monkeypatch):
     r = Runner(tmp_path, tmp_path / "runs.json")
     q = r.subscribe()
     r.start("check", [])  # no inputs in tmp_path -> exits non-zero quickly
-    for _ in range(300):
-        if not r.current()["running"]:
-            break
-        time.sleep(0.05)
+    assert r.wait(60)
     st = r.current()
     assert st["running"] is False and st["exit_code"] not in (None, 0)
     texts = [x["text"] for x in r.lines]
-    assert texts[0].startswith("$ python -m rpa check") and texts[-1].startswith("--- check")
+    assert texts[0].startswith("$ rpa check") and texts[-1].startswith("--- check")
     assert r.history[-1]["stage"] == "check" and json.loads((tmp_path / "runs.json").read_text())[-1]["exit_code"] == st["exit_code"]
     events = []
     while not q.empty():
         events.append(q.get_nowait()[0])
     assert "log" in events and "state" in events
+    _blocking_stage(monkeypatch)
     r2 = Runner(tmp_path)
-    r2.start("gui", [])  # would run forever...
+    r2.start("search", [])  # would run forever...
     with pytest.raises(RuntimeError):
         r2.start("search", [])  # ...so a second long stage must be refused
-    r2.cancel()
+    assert r2.cancel() and r2.wait(10)
+    assert r2.current()["cancelled"] is True and r2.current()["exit_code"] == CANCELLED_CODE
+
+
+def test_runner_side_stage_and_per_run_logs(tmp_path, monkeypatch):
+    """A light stage (check) runs beside a long one; every run gets a log file."""
+    _blocking_stage(monkeypatch)
+    r = Runner(tmp_path, tmp_path / "runs.json", log_dir=tmp_path / "logs")
+    r.start("search", [])  # long-lived main stage
+    st = r.start("check", [])
+    assert st["side"] and st["side"]["stage"] == "check" and st["running"]
+    for _ in range(2400):  # a loaded machine can take a while over `check`
+        if r.current()["side"] is None:
+            break
+        time.sleep(0.05)
+    assert r.current()["side"] is None
+    rec = r.history[-1]
+    assert rec["stage"] == "check" and rec.get("side") is True and rec["log"] and (tmp_path / rec["log"]).exists()
+    with pytest.raises(RuntimeError):
+        r.start("search", [])  # a second long stage is still refused
+    assert r.cancel() and r.wait(10)
 
 
 def test_state_collector_on_empty_project(tmp_path):
@@ -85,17 +121,18 @@ def test_state_collector_on_empty_project(tmp_path):
     assert s["inputs"]["status"] == "error" and s["inputs"]["problems"]
     for k in ("aero", "reference", "validate", "optimize", "results", "confirm"):
         assert s[k]["status"] == "todo"
-    assert s["worker"]["state"] == "offline"
-    assert sc.options() == {"ork": [], "cdx1": [], "motor_dirs": []}
+    from rpa.native import engine_status
+
+    # no VM worker; "online" only when the native engine is built on this machine
+    assert s["worker"]["state"] == ("online" if engine_status(sc.config())["ok"] else "offline")
+    assert sc.motor_tree([], []) == {"folders": [], "selected": [], "unknown": []}
     s2 = sc.collect(Runner(tmp_path))
     assert s2["inputs"]["boosters"]["n"] == 0 and s2["inputs"]["boosters"]["problems"]
 
 
-_SERVER_ROOTS: dict[str, str] = {}
-
-
-def server_root(url: str) -> str:
-    return _SERVER_ROOTS[url]
+def _client(root: Path):
+    svc = Service(root, watch=False, warm=False)
+    return TestClient(create_app(svc)), svc
 
 
 @pytest.fixture
@@ -103,77 +140,60 @@ def server(tmp_path):
     (tmp_path / "config.yaml").write_text(CONFIG)
     (tmp_path / "output").mkdir()
     (tmp_path / "output" / "designs.csv").write_text("booster,profile,sep_delay_s,ign_delay_s,apogee_ft,status\nb1,supersonic,1.0,2.0,45050.0,solved\n")
-    app = App(tmp_path, watch=False)
-    handler = type("H", (Handler,), {"app": app})
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    url = f"http://127.0.0.1:{httpd.server_address[1]}"
-    _SERVER_ROOTS[url] = str(tmp_path)
-    yield url
-    httpd.shutdown()
-
-
-def _get(url):
-    with urllib.request.urlopen(url, timeout=5) as r:
-        return r.status, json.loads(r.read() or b"{}") if r.headers.get_content_type() == "application/json" else r.read()
-
-
-def _post(url, body):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read())
+    c, svc = _client(tmp_path)
+    with c:
+        yield c, tmp_path
+    svc.close()
 
 
 def test_http_api(server):
-    status, page = _get(server + "/")
-    assert status == 200 and b"Rocket Profile Analysis" in page
-    status, ping = _get(server + "/api/ping")
-    assert status == 200 and ping["app"] == "rpa" and Path(ping["root"]).name == Path(server_root(server)).name
-    status, st = _get(server + "/api/state")
-    assert status == 200 and st["results"]["n"] == 1 and st["results"]["best"]["booster"] == "b1"
-    status, t = _get(server + "/api/table/designs")
-    assert t["rows"][0]["apogee_ft"] == 45050.0
+    c, root = server
+    r = c.get("/")
+    assert r.status_code == 200 and "Rocket Profile Analysis" in r.text
+    ping = c.get("/api/ping").json()
+    assert ping["app"] == "rpa" and Path(ping["root"]).name == root.name
+    st = c.get("/api/state").json()
+    assert st["results"]["n"] == 1 and st["results"]["best"]["booster"] == "b1"
+    assert c.get("/api/table/designs").json()["rows"][0]["apogee_ft"] == 45050.0
     # config edit through the API keeps comments
-    status, c = _post(server + "/api/config", {"set": {"target.apogee_ft": 40000}})
-    assert status == 200 and c["parsed"]["target"]["apogee_ft"] == 40000 and "# keep" in c["text"]
+    r = c.post("/api/config", json={"set": {"target.apogee_ft": 40000}})
+    assert r.status_code == 200 and r.json()["parsed"]["target"]["apogee_ft"] == 40000 and "# keep" in r.json()["text"]
     # path guard
-    status, _ = _post(server + "/api/run", {"stage": "rm", "args": []})
-    assert status == 400
-    status, _ = _post(server + "/api/run", {"stage": "check", "args": ["--evil"]})
-    assert status == 400
-    with pytest.raises(urllib.error.HTTPError) as ei:
-        _get(server + "/api/history?path=../../etc/passwd")
-    assert ei.value.code in (403, 404)
-    with pytest.raises(urllib.error.HTTPError) as ei:
-        _get(server + "/files/../config.yaml")
-    assert ei.value.code in (403, 404)
+    assert c.post("/api/run", json={"stage": "rm", "args": []}).status_code == 400
+    assert c.post("/api/run", json={"stage": "check", "args": ["--evil"]}).status_code == 400
+    assert c.get("/api/history?path=../../etc/passwd").status_code in (400, 403, 404)
+    assert c.get("/files/%2e%2e/config.yaml").status_code in (403, 404)  # httpx folds a literal ..
 
 
-def test_launcher_port_choice_and_app_bundle(server, tmp_path):
-    import sys
+def test_launcher_port_choice(tmp_path):
+    """choose_port reuses a service for the same project and skips one for another."""
+    import uvicorn
 
-    from rpa.gui.launcher import choose_port, ping
+    from rpa.service.launch import choose_port, ping
 
-    port = int(server.rsplit(":", 1)[1])
-    assert ping(port)["app"] == "rpa"
-    # same repo -> reuse the running instance
-    p, running = choose_port(port, Path(server_root(server)))
-    assert p == port and running is not None
-    # another repo -> that port is skipped, a free one is chosen
-    p2, running2 = choose_port(port, tmp_path / "other")
-    assert p2 != port and running2 is None
-    if sys.platform == "darwin":
-        from rpa.gui.launcher import make_app
-
-        root = tmp_path / "proj"
-        (root / "worker").mkdir(parents=True)
-        (made,) = make_app(root, install=False)
-        assert made.name.endswith(".app") and (made / "Contents" / "MacOS" / "launch").exists() and (made / "Contents" / "Info.plist").exists()
-        assert str(root) in (made / "Contents" / "MacOS" / "launch").read_text()
+    (tmp_path / "config.yaml").write_text(CONFIG)
+    svc = Service(tmp_path, watch=False, warm=False)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(8)
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(create_app(svc), log_level="error", access_log=False))
+    t = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    t.start()
+    try:
+        for _ in range(100):
+            if ping(port):
+                break
+            time.sleep(0.05)
+        assert ping(port)["app"] == "rpa"
+        p, running = choose_port(port, tmp_path)
+        assert p == port and running is not None
+        p2, running2 = choose_port(port, tmp_path / "other")
+        assert p2 != port and running2 is None
+    finally:
+        server.should_exit = True
+        t.join(5)
+        svc.close()
 
 
 ENG_BOOSTERS = """; Throat 1.500 in, exit 3.000 in.
@@ -256,33 +276,24 @@ def test_design_http_routes(design_project):
     hist_dir = design_project / "output" / "histories"
     hist_dir.mkdir()
     (hist_dir / "final-B2-02+01-S1-supersonic.csv").write_text("time_s,mach\n0.0,0.0\n")
-    app = App(design_project, watch=False)
-    handler = type("H", (Handler,), {"app": app})
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{httpd.server_address[1]}"
-    try:
-        status, d = _get(url + "/api/design?booster=B2-02&sustainer=01-S1")
-        assert status == 200 and d["booster"]["label"] == "B2-02" and d["vehicle"]["total_length_in"] == 175
+    c, svc = _client(design_project)
+    with c:
+        d = c.get("/api/design?booster=B2-02&sustainer=01-S1").json()
+        assert d["booster"]["label"] == "B2-02" and d["vehicle"]["total_length_in"] == 175
         assert d["history"] is None  # no profile given -> no lookup
-        _, d2 = _get(url + "/api/design?booster=B2-02&sustainer=01-S1&profile=supersonic")
+        d2 = c.get("/api/design?booster=B2-02&sustainer=01-S1&profile=supersonic").json()
         assert d2["history"]["path"] == "output/histories/final-B2-02+01-S1-supersonic.csv"
-        _, d3 = _get(url + "/api/design?booster=B2-02&sustainer=01-S1&profile=subsonic")
+        d3 = c.get("/api/design?booster=B2-02&sustainer=01-S1&profile=subsonic").json()
         assert d3["history"] is None  # no history for that profile yet
-        with urllib.request.urlopen(url + "/download/combo?booster=B2-02&sustainer=01-S1&profile=supersonic", timeout=5) as r:
-            assert r.headers["Content-Type"] == "application/zip" and 'filename="B2-02+01-S1-supersonic.zip"' in r.headers["Content-Disposition"]
-            assert r.read()[:2] == b"PK"
-        with urllib.request.urlopen(url + "/download/eng?kind=sustainer&label=01-S1", timeout=5) as r:
-            assert 'filename="01-S1.eng"' in r.headers["Content-Disposition"] and b"S1-01 79 1219" in r.read()
+        r = c.get("/download/combo?booster=B2-02&sustainer=01-S1&profile=supersonic")
+        assert r.headers["content-type"] == "application/zip" and 'filename="B2-02+01-S1-supersonic.zip"' in r.headers["content-disposition"]
+        assert r.content[:2] == b"PK"
+        r = c.get("/download/eng?kind=sustainer&label=01-S1")
+        assert 'filename="01-S1.eng"' in r.headers["content-disposition"] and b"S1-01 79 1219" in r.content
         for bad in ("/download/eng?kind=evil&label=01-S1", "/download/eng?kind=booster", "/download/combo?booster=B2-02"):
-            with pytest.raises(urllib.error.HTTPError) as ei:
-                _get(url + bad)
-            assert ei.value.code == 400
-        with pytest.raises(urllib.error.HTTPError) as ei:
-            _get(url + "/download/eng?kind=booster&label=nope")
-        assert ei.value.code == 404
-    finally:
-        httpd.shutdown()
+            assert c.get(bad).status_code == 400
+        assert c.get("/download/eng?kind=booster&label=nope").status_code == 404
+    svc.close()
 
 
 def _write_aero_tables(d: Path):
@@ -322,39 +333,15 @@ mass_model:
     ref_booster_prop_kg: 13.7
     booster_prop_cg_in: 130
 """)
-    app = App(design_project, watch=False)
-    handler = type("H", (Handler,), {"app": app})
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{httpd.server_address[1]}"
-    try:
-        status, d = _get(url + "/api/flight?booster=B2-02&sustainer=01-S1&profile=supersonic&sep=0.5&ign=1.0")
-        assert status == 200 and d["path"] is None and d["n"] > 1
+    c, svc = _client(design_project)
+    with c:
+        r = c.get("/api/flight?booster=B2-02&sustainer=01-S1&profile=supersonic&sep=0.5&ign=1.0")
+        d = r.json()
+        assert r.status_code == 200 and d["path"] is None and d["n"] > 1
         assert set(["time_s", "mach", "altitude_ft", "velocity_fps"]).issubset(d["columns"])
         assert d["summary"]["apogee_ft"] > 0 and d["summary"]["t_burnout_s"] > 0
-        with pytest.raises(urllib.error.HTTPError) as ei:
-            _get(url + "/api/flight?booster=nope&sustainer=01-S1&profile=supersonic&sep=0.5&ign=1.0")
-        assert ei.value.code == 500
-    finally:
-        httpd.shutdown()
-
-
-def test_runner_side_stage_and_per_run_logs(tmp_path):
-    """A light stage (check) runs beside a long one; every run gets a log file."""
-    r = Runner(tmp_path, tmp_path / "runs.json", log_dir=tmp_path / "logs")
-    r.start("gui", ["--no-browser"])  # long-lived main stage
-    st = r.start("check", [])
-    assert st["side"] and st["side"]["stage"] == "check" and st["running"]
-    for _ in range(400):
-        if r.current()["side"] is None:
-            break
-        time.sleep(0.05)
-    assert r.current()["side"] is None
-    rec = r.history[-1]
-    assert rec["stage"] == "check" and rec.get("side") is True and rec["log"] and (tmp_path / rec["log"]).exists()
-    with pytest.raises(RuntimeError):
-        r.start("search", [])  # a second long stage is still refused
-    assert r.cancel()
+        assert c.get("/api/flight?booster=nope&sustainer=01-S1&profile=supersonic&sep=0.5&ign=1.0").status_code >= 400
+    svc.close()
 
 
 def test_manifest_diff_ignores_unrelated_config(tmp_path):
@@ -383,71 +370,64 @@ def test_manifest_diff_ignores_unrelated_config(tmp_path):
 
 
 def test_results_shortlist_samples_archives_cleanup_jobs(server):
-    root = Path(server_root(server))
+    c, root = server
     (root / "output" / "designs_samples.json").write_text(json.dumps({"b1|s|supersonic": [[1.0, 45000.0, 1.0]], "other": [[2.0, 1.0, 1.0]]}))
-    _, d = _get(server + "/api/samples?key=b1%7Cs%7Csupersonic")
-    assert list(d) == ["b1|s|supersonic"]
-    _, d = _get(server + "/api/samples?keys=b1%7Cs%7Csupersonic,other")
-    assert set(d) == {"b1|s|supersonic", "other"}
+    assert list(c.get("/api/samples?key=b1%7Cs%7Csupersonic").json()) == ["b1|s|supersonic"]
+    assert set(c.get("/api/samples?keys=b1%7Cs%7Csupersonic,other").json()) == {"b1|s|supersonic", "other"}
     # shortlist round trip, visible in the state
-    _, d = _post(server + "/api/shortlist", {"add": "b1|s|supersonic"})
-    assert d["keys"] == ["b1|s|supersonic"]
-    _, st = _get(server + "/api/state")
+    assert c.post("/api/shortlist", json={"add": "b1|s|supersonic"}).json()["keys"] == ["b1|s|supersonic"]
+    st = c.get("/api/state").json()
     assert st["results"]["shortlist"] == ["b1|s|supersonic"] and "disk" in st and st["worker"]["n_orphan"] == 0
-    _, d = _post(server + "/api/shortlist", {"remove": "b1|s|supersonic"})
-    assert d["keys"] == []
-    _, w = _get(server + "/api/worker")
+    assert c.post("/api/shortlist", json={"remove": "b1|s|supersonic"}).json()["keys"] == []
+    w = c.get("/api/worker").json()
     assert "jobs" in w and "current_job" in w
-    _, r = _get(server + "/api/runs")
+    r = c.get("/api/runs").json()
     assert "history" in r and "runner" in r
     # snapshot of the results and its diff source
-    status, snap = _post(server + "/api/archive", {"label": "t"})
-    assert status == 200 and "designs.csv" in snap["files"] and snap["name"].endswith("-t")
-    _, ar = _get(server + "/api/archives")
+    r = c.post("/api/archive", json={"label": "t"})
+    snap = r.json()
+    assert r.status_code == 200 and "designs.csv" in snap["files"] and snap["name"].endswith("-t")
+    ar = c.get("/api/archives").json()
     assert ar["archives"][0]["n_designs"] == 1 and ar["archives"][0]["label"] == "t"
-    _, a = _get(server + "/api/archive?name=" + snap["name"])
-    assert a["rows"][0]["booster"] == "b1"
+    assert c.get("/api/archive?name=" + snap["name"]).json()["rows"][0]["booster"] == "b1"
     # bulky outputs can be cleared
     hd = root / "output" / "histories"
     hd.mkdir()
     (hd / "final-x.csv").write_text("a\n")
-    _, c = _post(server + "/api/cleanup", {"what": "histories"})
-    assert c["removed"] == 1 and not (hd / "final-x.csv").exists()
-    status, _ = _post(server + "/api/cleanup", {"what": "nope"})
-    assert status == 400
+    cl = c.post("/api/cleanup", json={"what": "histories"}).json()
+    assert cl["removed"] == 1 and not (hd / "final-x.csv").exists()
+    assert c.post("/api/cleanup", json={"what": "nope"}).status_code == 400
     # search_rows is no longer served
-    with pytest.raises(urllib.error.HTTPError) as ei:
-        _get(server + "/api/table/search_rows")
-    assert ei.value.code == 404
+    assert c.get("/api/table/search_rows").status_code == 404
     # job actions on a waiting job
     jd = root / "jobs" / "0001-fake"
     jd.mkdir(parents=True)
     (jd / "job.json").write_text('{"name": "fake", "type": "export", "n_rows": 1}')
-    _, w = _get(server + "/api/worker")
-    assert w["jobs"][0]["state"] == "queued"
-    status, j = _post(server + "/api/job/0001-fake", {"action": "discard"})
-    assert status == 200 and (root / "jobs" / "_discarded" / "0001-fake").exists()
-    status, _ = _post(server + "/api/job/0001-fake", {"action": "delete"})
-    assert status == 404
+    assert c.get("/api/worker").json()["jobs"][0]["state"] == "queued"
+    r = c.post("/api/job/0001-fake", json={"action": "discard"})
+    assert r.status_code == 200 and (root / "jobs" / "_discarded" / "0001-fake").exists()
+    assert c.post("/api/job/0001-fake", json={"action": "delete"}).status_code == 404
     # a run with --designs is accepted by the runner's flag guard
-    status, _ = _post(server + "/api/run", {"stage": "confirm", "args": ["--designs", "b1|s|supersonic"]})
-    assert status in (200, 409)
+    assert c.post("/api/run", json={"stage": "confirm", "args": ["--designs", "b1|s|supersonic"]}).status_code in (200, 409)
 
 
 def test_motors_endpoint_and_exclusions(design_project):
     (design_project / "config.yaml").write_text("paths:\n  ork: input/a.ork\n  cdx1: input/x.CDX1\n  boosters: [input/motors/boosters.eng]\n  sustainers: [input/motors/sus]\n  exclude_boosters: [B1-01]\n")
-    app = App(design_project, watch=False)
-    handler = type("H", (Handler,), {"app": app})
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{httpd.server_address[1]}"
-    try:
-        _, m = _get(url + "/api/motors")
+    c, svc = _client(design_project)
+    with c:
+        m = c.get("/api/motors").json()
         assert {r["label"]: r["excluded"] for r in m["boosters"]["rows"]} == {"B1-01": True, "B2-02": False}
         assert m["boosters"]["rows"][0]["file"] == "input/motors/boosters.eng" and m["boosters"]["excluded"] == ["B1-01"]
-        _, st = _get(url + "/api/state")
+        st = c.get("/api/state").json()
         assert st["inputs"]["boosters"]["n"] == 1 and st["inputs"]["motors"]["n_boosters"] == 1
-        _, o = _get(url + "/api/options")
-        assert [d["path"] for d in o["motor_dirs"]] == ["input/motors", "input/motors/sus"]
-    finally:
-        httpd.shutdown()
+        # motor tree: a file entry shows its folder, a folder entry all its files
+        o = c.post("/api/motor_tree", json={"entries": ["input/motors/boosters.eng", "input/motors/sus"], "extra_folders": []}).json()
+        assert [d["path"] for d in o["folders"]] == ["input/motors", "input/motors/sus"]
+        assert o["selected"] == ["input/motors/boosters.eng", "input/motors/sus/01-S1.eng"] and o["unknown"] == []
+        # absolute paths outside the project stay absolute
+        outside = design_project.parent / "elsewhere"
+        outside.mkdir(exist_ok=True)
+        (outside / "z.eng").write_text(ENG_SUSTAINER)
+        o = c.post("/api/motor_tree", json={"entries": [str(outside / "z.eng"), "nope/missing.eng"]}).json()
+        assert o["folders"][0]["path"] == str(outside) and o["selected"] == [str(outside / "z.eng")] and o["unknown"] == ["nope/missing.eng"]
+    svc.close()

@@ -1,8 +1,7 @@
 """Headless OpenRocket 24.12 via JPype.
 
-Used for the SOP's OpenRocket step (sustainer / combined loaded weight and CG
-for every booster) and, optionally, as a preview simulation backend so the
-whole pipeline can be exercised without the RASAero VM.
+Sustainer / combined loaded weight and CG for every booster, and optionally
+a preview simulation backend so the pipeline runs without the RASAero VM.
 """
 
 from __future__ import annotations
@@ -125,7 +124,7 @@ class OpenRocket:
         CCE = self.core.rocketcomponent.ComponentChangeEvent
         self.rocket.fireComponentChangeEvent(CCE.MOTOR_CHANGE)
 
-    # ---- mass properties (SOP figures 7-10) ----------------------------
+    # ---- mass properties ------------------------------------------------
     def stage_masses(self, sustainer: Motor, booster: Motor) -> StageMasses:
         """Dry and loaded mass/CG of the sustainer alone and of the whole stack."""
         MC = self.core.masscalc.MassCalculator

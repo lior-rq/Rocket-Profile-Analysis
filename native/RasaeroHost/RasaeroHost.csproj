@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>rasaero-host</AssemblyName>
+    <RootNamespace>RasaeroHost</RootNamespace>
+    <NoWarn>CS8981;CS0618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="RASAeroEngine">
+      <HintPath>../../vendor/rasaero/RASAeroEngine.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

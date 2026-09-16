@@ -1,7 +1,6 @@
-"""Simulation backends: the Python integrator on RASAero aero tables (the
-optimizer's workhorse), RASAero II itself (via the VM worker; the SOP's tool
-of record, used for table exports and final confirmation) and OpenRocket
-headless (preview / self-test)."""
+"""Simulation backends: the Python integrator on RASAero aero tables (what
+the search runs on), RASAero II itself via the VM worker (table exports and
+final confirmation) and OpenRocket headless (preview)."""
 
 from __future__ import annotations
 
@@ -11,9 +10,31 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import cdx1, history as H
+from . import cdx1
+from . import history as H
 from .jobs import EXPORT, EXPORT_BATCH, RERUN_SAVE, JobClient
 from .models import SimRow
+
+
+class ExportRowMismatch(RuntimeError):
+    """A View Data export is not the flight it was taken for (RASAero exports
+    the grid row that is selected, so a mis-selected row hands back another
+    flight's history)."""
+
+
+def export_mismatch(row: SimRow, h: pd.DataFrame, weight_tol_lb: float = 0.1, apogee_tol_pct: float = 1.0) -> str | None:
+    """Why `h` cannot be `row`'s flight, or None. Checks the two numbers the
+    export shares with the row: liftoff weight (from the CDX1 we wrote) and
+    apogee (from result.CDX1). Both MUST already be on the same altitude
+    reference, i.e. called after _apply_offset."""
+    w0 = float(h["weight_lb"].iloc[0])
+    if abs(w0 - row.combined_wt_lb) > weight_tol_lb:
+        return f"export lifts off at {w0:.3f} lb, the row flew {row.combined_wt_lb:.3f} lb"
+    if row.max_alt_ft:
+        ap = H.apogee(h)[0]
+        if abs(ap - row.max_alt_ft) > apogee_tol_pct / 100.0 * row.max_alt_ft:
+            return f"export apogees at {ap:.0f} ft, RASAero reported {row.max_alt_ft:.0f} ft for the row"
+    return None
 
 
 class SimBackend:
@@ -31,6 +52,12 @@ class SimBackend:
         """Like export() but nothing has to land on disk (characterization
         runs hundreds of these); backends that can, skip the file."""
         return self.export(row, name)
+
+    def histories(self, rows: list[SimRow], names: list[str]):
+        """history() for many rows, yielded in order; backends with a pool
+        overlap the flights. Frames are dropped as soon as they are consumed."""
+        for row, name in zip(rows, names, strict=True):
+            yield self.history(row, name)
 
 
 class RASAeroBackend(SimBackend):
@@ -118,6 +145,9 @@ class RASAeroBackend(SimBackend):
             # fall back to the history itself for the summary numbers
             row.max_alt_ft, row.t_apogee_s = H.apogee(h)
             row.max_vel_fps = float(h["velocity_fps"].max())
+        why = export_mismatch(row, h)
+        if why:
+            raise ExportRowMismatch(f"{name}: {why}")
         return h
 
     def export_batch(self, rows: list[SimRow], names: list[str]) -> list[pd.DataFrame | None]:
@@ -148,6 +178,11 @@ class RASAeroBackend(SimBackend):
             if h is not None and row.max_alt_ft is None:  # result.CDX1 entry did not merge cleanly
                 row.max_alt_ft, row.t_apogee_s = H.apogee(h)
                 row.max_vel_fps = float(h["velocity_fps"].max())
+        # every export MUST be its own row's flight: one mis-selected grid
+        # row turns the whole batch into copies of one flight
+        bad = [f"{name}: {why}" for row, name, h in zip(rows, names, histories, strict=True) if h is not None and (why := export_mismatch(row, h))]
+        if bad:
+            raise ExportRowMismatch(f"{len(bad)} of {len(rows)} batched exports are not the flight they were taken for ({bad[0]}" + (f"; +{len(bad) - 1} more)" if len(bad) > 1 else ")"))
         return histories
 
 
@@ -251,6 +286,9 @@ class PythonBackend(SimBackend):
         return Vehicle(self.ms.booster(row.booster), self.ms.sustainer_by_label(row.sustainer), row.combined_wt_lb, row.sustainer_wt_lb, self.ref_diameter_in, row.booster_nozzle_in, row.sustainer_nozzle_in)
 
     def _sim(self, row: SimRow, history: bool = True):
+        from .pipeline import check_cancel
+
+        check_cancel()
         s, h = self.sim.run(self.vehicle(row), row.sep_delay_s, row.ign_delay_s, history=history)
         row.max_alt_ft = round(s["max_alt_ft"], 1)
         row.max_vel_fps = round(s["max_vel_fps"], 1)
@@ -297,7 +335,10 @@ class PythonBackend(SimBackend):
         every = max(1, n // 10)
         next_mark = every
         # generous: flight ~0.05s, cold start ~10s; a stuck pool falls back to serial
+        from .pipeline import check_cancel
+
         for fut in as_completed(futures, timeout=120.0 + 2.0 * n / self.workers):
+            check_cancel()
             rows_chunk = futures[fut]
             for r, (alt, vel, t_ap) in zip(rows_chunk, fut.result(), strict=True):
                 r.max_alt_ft, r.max_vel_fps, r.t_apogee_s = round(alt, 1), round(vel, 1), round(t_ap, 2)

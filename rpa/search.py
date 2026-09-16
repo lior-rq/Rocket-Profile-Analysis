@@ -1,18 +1,15 @@
 """Hit the target apogee by choosing the staging delays.
 
-Two knobs, both counted the RASAero way: the booster separation delay after
-burnout and the sustainer ignition delay after separation (so ignition can
-never precede burnout). The separation delay is sampled on a small grid
-across the allowed window (profiles.separation_delay_min/max_s, narrowed by
-the profile's Mach rule); for each, the ignition delay is swept over
-profiles.ignition_delay_min/max_s. Apogee vs. coast time is NOT monotonic for
-this rocket (a longer coast lets the sustainer burn in thinner air until
-gravity losses win), so the coarse ignition grid is scanned for every bracket
-where the apogee crosses the target and each bracket is refined with regula
-falsi. Every round is one batch through the backend, across all candidates at
-once. The best candidate per (booster, sustainer, profile) is kept: solved
-beats unsolved, then the smallest miss, then the shortest total coast (highest
-velocity at ignition).
+Two knobs, both in RASAero's convention: separation delay after burnout and
+ignition delay after separation (so ignition never precedes burnout).
+Separation is sampled on a small grid across its window (narrowed by the
+profile's Mach rule); for each, the ignition delay is swept over its window.
+Apogee vs. coast time is not monotonic (a longer coast lets the sustainer
+burn in thinner air until gravity losses win), so every bracket where the
+apogee crosses the target is refined with regula falsi. Each round is one
+batch through the backend for all candidates. Best per (booster, sustainer,
+profile): solved beats unsolved, then the smallest miss, then the shortest
+coast.
 """
 
 from __future__ import annotations
@@ -85,17 +82,17 @@ class ApogeeSearch:
         self.step = float(p["coarse_step_s"])
         self.sep_step = float(p["separation_step_s"])
         self.max_rounds = int(p["max_refine_rounds"])
+        self.pilot_grid = bool(p.get("pilot_grid", True))
         self.cands = [Candidate(e.booster, e.profile, sep, sustainer=e.sustainer) for e in eligibilities if e.eligible for sep in self.separation_grid(e.sep_min_s, e.sep_max_s)]
         self.all_rows: list[SimRow] = []
 
-    def separation_grid(self, lo: float, hi: float, max_points: int = 9) -> list[float]:
-        """min, min+step, ..., max (both ends always included; coarsened if the step is tiny)."""
+    def separation_grid(self, lo: float, hi: float) -> list[float]:
+        """min, min+step, ..., max at profiles.separation_step_s (both ends always included)."""
         lo, hi = float(lo), float(hi)
         if hi - lo < 1e-9:
             return [round(lo, 2)]
-        step = max(self.sep_step, (hi - lo) / (max_points - 1))
-        n = math.floor((hi - lo) / step + 1e-9) + 1
-        pts = {round(lo + i * step, 2) for i in range(n)} | {round(hi, 2)}
+        n = math.floor((hi - lo) / self.sep_step + 1e-9) + 1
+        pts = {round(lo + i * self.sep_step, 2) for i in range(n)} | {round(hi, 2)}
         return sorted(pts)
 
     # ---- rounds ----------------------------------------------------------
@@ -152,16 +149,90 @@ class ApogeeSearch:
         coast = c.sep_delay_s + best.ign_delay_s
         return (0 if c.status == "solved" else 1, 0.0 if c.status == "solved" else miss, coast)
 
+    def _grid_rows(self, c: Candidate, delays, rnd: int = 0) -> list[SimRow]:
+        rows = []
+        for d in delays:
+            d = round(float(d), 2)
+            if d in c.samples:
+                continue
+            r = make_row(c.booster, c.profile, c.sep_delay_s, d, self.ms, self.mass[(c.booster, c.sustainer)], self.cfg, rnd=rnd)
+            c.samples[r.ign_delay_s] = r
+            rows.append(r)
+        return rows
+
+    def _pilots(self, cands: list[Candidate]) -> dict[int, Candidate]:
+        """Neighbour candidate id -> its pilot: the middle separation delay of
+        each (booster, sustainer, profile) group flies the full grid first."""
+        groups: dict[tuple, list[Candidate]] = {}
+        for c in cands:
+            groups.setdefault(c.key, []).append(c)
+        out: dict[int, Candidate] = {}
+        for g in groups.values():
+            if len(g) < 2:
+                continue
+            g = sorted(g, key=lambda c: c.sep_delay_s)
+            p = g[len(g) // 2]
+            for c in g:
+                if c is not p:
+                    out[id(c)] = p
+        return out
+
+    def _window(self, c: Candidate, pilot: Candidate) -> list[float]:
+        """Coarse grid points worth flying for a neighbour of `pilot`: both
+        ends, plus two steps around each of the pilot's crossings, or around
+        its peak when it never crossed the target."""
+        full = self._coarse_delays(c)
+        s = [r for r in pilot.sorted_samples() if r.max_alt_ft is not None]
+        if len(s) < 2:
+            return full
+        errs = [r.max_alt_ft - self.target for r in s]
+        spans = [(s[i].ign_delay_s, s[i + 1].ign_delay_s) for i in range(len(s) - 1) if errs[i] * errs[i + 1] <= 0]
+        if not spans:
+            peak = max(s, key=lambda r: r.max_alt_ft).ign_delay_s
+            spans = [(peak, peak)]
+        keep = {full[0], full[-1]}
+        m = 2 * self.step + 1e-6
+        for lo, hi in spans:
+            keep |= {d for d in full if lo - m <= d <= hi + m}
+        return sorted(keep)
+
+    def _gaps(self, c: Candidate) -> list[float]:
+        """Grid points between two samples that straddle the target but are not
+        adjacent on the coarse grid (a crossing outside the narrowed window)."""
+        s = [r for r in c.sorted_samples() if r.max_alt_ft is not None]
+        errs = [r.max_alt_ft - self.target for r in s]
+        full = self._coarse_delays(c)
+        out = []
+        for i in range(len(s) - 1):
+            lo, hi = s[i].ign_delay_s, s[i + 1].ign_delay_s
+            if errs[i] * errs[i + 1] <= 0 and hi - lo > self.step + 1e-6:
+                out += [d for d in full if lo < d < hi]
+        return out
+
     def _search(self, cands: list[Candidate], tag: str):
         """Coarse ignition-delay grid, then bracket refinement, for these candidates."""
+        pilots = self._pilots(cands) if self.pilot_grid else {}
         rows = []
         for c in cands:
-            for d in self._coarse_delays(c):
-                r = make_row(c.booster, c.profile, c.sep_delay_s, d, self.ms, self.mass[(c.booster, c.sustainer)], self.cfg, rnd=0)
-                c.samples[r.ign_delay_s] = r
-                rows.append(r)
-        self.log(f"  round 0: {len(rows)} rows over {len(cands)} candidates (ignition delay grid)")
+            if id(c) not in pilots:
+                rows += self._grid_rows(c, self._coarse_delays(c))
+        self.log(f"  round 0: {len(rows)} rows over {len(cands) - len(pilots)} candidates (ignition delay grid)" + (f"; {len(pilots)} separation-delay neighbours follow their pilot" if pilots else ""))
         self._run_rows(rows, f"{tag}-r0")
+        if pilots:
+            rows = []
+            for c in cands:
+                p = pilots.get(id(c))
+                if p is not None:
+                    rows += self._grid_rows(c, self._window(c, p))
+            self.log(f"  round 0b: {len(rows)} rows over {len(pilots)} neighbours (grid narrowed to the pilot's crossings)")
+            self._run_rows(rows, f"{tag}-r0b")
+            rows = []
+            for c in cands:
+                if id(c) in pilots:
+                    rows += self._grid_rows(c, self._gaps(c))
+            if rows:
+                self.log(f"  round 0c: {len(rows)} rows filling grid gaps that straddle the target")
+                self._run_rows(rows, f"{tag}-r0c")
 
         for rnd in range(1, self.max_rounds + 1):
             rows = []

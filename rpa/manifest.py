@@ -11,8 +11,8 @@ import time
 from pathlib import Path
 
 _MOTORS = ["paths.boosters", "paths.sustainers", "paths.exclude_boosters", "paths.exclude_sustainers", "ric"]
-_MASS = _MOTORS + ["paths.ork", "paths.cdx1", "mass_model", "sustainer_selection", "characterization", "launch_site", "python_sim", "rasaero.sustainer_nozzle_in", "rasaero.booster_nozzle_in", "surface_finish"]
-_CHAR = _MASS + ["profiles.subsonic_max_mach", "profiles.supersonic_min_mach", "profiles.mach_margin", "backend", "paths.aero_dir"]
+_MASS = _MOTORS + ["paths.ork", "mass_model"]
+_CHAR = _MASS + ["paths.cdx1", "sustainer_selection", "characterization", "launch_site", "python_sim", "rasaero.sustainer_nozzle_in", "rasaero.booster_nozzle_in", "surface_finish", "profiles.subsonic_max_mach", "profiles.supersonic_min_mach", "profiles.mach_margin", "backend", "paths.aero_dir"]
 _SEARCH = _CHAR + ["target", "profiles"]
 STAGE_KEYS: dict[str, list[str]] = {
     "check": _CHAR,

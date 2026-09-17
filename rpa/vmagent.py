@@ -8,6 +8,8 @@ Facts about utmctl (measured on UTM 4.x):
     and does not reliably return output - fire-and-forget only.
   * quotes inside an exec command line are mangled: never pass arguments
     that contain spaces.
+  * any utmctl call launches UTM.app in the foreground when it is not
+    running; `open -gj -a` first hides that (utmctl's --hide is a no-op).
 """
 
 from __future__ import annotations
@@ -15,11 +17,14 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 
 UTMCTL_CANDIDATES = ["/Applications/UTM.app/Contents/MacOS/utmctl", os.path.expanduser("~/Applications/UTM.app/Contents/MacOS/utmctl")]
 DEFAULT_GUEST_ROOT = r"C:\rpa"  # worker files in <root>\worker, jobs in <root>\jobs
+_LAUNCH_LOCK = threading.Lock()  # one hidden UTM.app launch at a time, across agents
 
 
 def find_utmctl(setting: str | None = "auto") -> str | None:
@@ -31,11 +36,16 @@ def find_utmctl(setting: str | None = "auto") -> str | None:
     return shutil.which("utmctl")
 
 
+def _utm_running() -> bool:
+    return subprocess.run(["pgrep", "-x", "UTM"], capture_output=True).returncode == 0
+
+
 class GuestAgent:
     def __init__(self, vm_name: str, utmctl: str | None = "auto"):
         self.vm = vm_name
         self.utmctl = find_utmctl(utmctl)
         self._status_cache: tuple[float, str | None] = (0.0, None)
+        self._no_launch_until = 0.0  # after a failed hidden launch, do not retry for a while
 
     @property
     def available(self) -> bool:
@@ -45,8 +55,26 @@ class GuestAgent:
         """(exit code, stdout bytes, stderr text)."""
         if not self.utmctl:
             raise RuntimeError("utmctl not found - is UTM installed? (vm.utmctl in config.yaml)")
+        self._ensure_app_hidden()
         p = subprocess.run([self.utmctl, *args], input=stdin, capture_output=True, timeout=timeout, check=False)
         return p.returncode, p.stdout or b"", (p.stderr or b"").decode("utf-8", "replace")
+
+    def _ensure_app_hidden(self):
+        """Launch UTM.app hidden before utmctl foregrounds it (see module facts)."""
+        if sys.platform != "darwin" or time.time() < self._no_launch_until:
+            return
+        with _LAUNCH_LOCK:
+            if _utm_running():
+                return
+            app = next((p for p in Path(self.utmctl).resolve().parents if p.suffix == ".app"), None)
+            if app is not None and subprocess.run(["open", "-gj", "-a", str(app)], capture_output=True).returncode == 0:
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    if _utm_running():
+                        time.sleep(2.0)  # the AppleEvent bridge needs a moment after launch
+                        return
+                    time.sleep(0.5)
+            self._no_launch_until = time.time() + 60
 
     # ---- VM ---------------------------------------------------------------
     def status(self, max_age: float = 5.0) -> str | None:

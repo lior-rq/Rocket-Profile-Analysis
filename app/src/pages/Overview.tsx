@@ -11,7 +11,7 @@ function sustainerSummary(m: any) {
   const sel = m.sustainer_selection || {}; const picked = sel.selected;
   if (picked && picked.length) return `${picked.map((x: any) => x.label).join(", ")} (${sel.mode}, ${picked.length} of ${m.n_sustainer_candidates})`;
   if (sel.mode === "best" || !sel.mode) return `${m.sustainer.label} (${fmt(m.sustainer.total_impulse_ns, 0)} N·s, highest of ${m.n_sustainer_candidates})`;
-  return `${sel.mode}: picked at the mass step (${m.n_sustainer_candidates} candidates)`;
+  return `${sel.mode}: picked at the characterize step (${m.n_sustainer_candidates} candidates)`;
 }
 
 export function OverviewPage() {

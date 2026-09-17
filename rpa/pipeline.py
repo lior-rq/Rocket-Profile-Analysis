@@ -159,6 +159,8 @@ class Pipeline:
             chosen = [ms.sustainer_by_label(r["label"]) for r in pick_spanning(sweep, k)]
         else:
             raise ValueError(f"sustainer_selection.mode must be best | span | list, not {mode!r}")
+        if len(chosen) > 1 and self.cfg["mass_model"]["method"] == "manual":
+            raise ValueError("mass_model.method: manual has one sustainer weight; set sustainer_selection.mode: best (or list one label)")
         d = {"key": key, "selected": [m.label for m in chosen], "reference_booster": ref_booster, "sweep": sweep, "motors": [{"label": m.label, "designation": m.designation, "total_impulse_ns": round(m.total_impulse_ns, 1), "burn_time_s": round(m.burn_time_s, 2), "avg_thrust_n": round(m.avg_thrust_n, 1), "nozzle_exit_in": m.nozzle_exit_in, "prop_mass_kg": m.prop_mass_kg} for m in chosen]}
         (self.out / "sustainers_selected.json").write_text(json.dumps(d, indent=1))
         self._sustainers = None
@@ -184,10 +186,9 @@ class Pipeline:
             raise RuntimeError(f"sustainer_selection.mode 'span' flies the candidates on the python backend and needs the aero tables (`rpa aero`): {e}") from e
         ref = sorted(ms.boosters, key=lambda b: b.total_impulse_ns)[len(ms.boosters) // 2]
         c = self.cfg["characterization"]
-        orr = self.openrocket()
-        hw = self.cfg.hardware_mass_lb()
+        mass = self.load_mass()
         # the same rows the search flies (nozzle overrides, mass model)
-        rows = [make_row(ref.label, None, c["separation_delay_s"], c["ignition_delay_s"], ms, orr.mass_row(s, ref, hw), self.cfg) for s in ms.sustainer_candidates]
+        rows = [make_row(ref.label, None, c["separation_delay_s"], c["ignition_delay_s"], ms, mass[(ref.label, s.label)], self.cfg) for s in ms.sustainer_candidates]
         be.run_batch(rows, "sustainer-sweep")
         out = [{"label": s.label, "apogee_ft": r.max_alt_ft, "max_vel_fps": r.max_vel_fps, "total_impulse_ns": round(s.total_impulse_ns, 1), "burn_time_s": round(s.burn_time_s, 2), "nozzle_exit_in": s.nozzle_exit_in} for s, r in zip(ms.sustainer_candidates, rows, strict=True)]
         out.sort(key=lambda r: r["apogee_ft"])
@@ -712,74 +713,61 @@ class Pipeline:
         return {"method": self.cfg["mass_model"]["method"], "hardware_mass_lb": self.cfg.hardware_mass_lb(), "ork": manifest.digest(ork) if ork and ork.exists() else None}
 
     def stage_mass(self, keep: list[MassRow] | None = None) -> list[MassRow]:
-        """The mass table; with `keep` (rows still valid from the cache) only
-        the missing (booster, sustainer) pairs go through OpenRocket."""
+        """Mass rows for every (booster, candidate) pair; `keep` skips cached ones."""
         method = self.cfg["mass_model"]["method"]
         ms = self.ms
+        sus = ms.sustainer_candidates
         if method == "manual":
             m = self.cfg["mass_model"]["manual"]
             need = ["sustainer_wt_lb", "sustainer_cg_in", "combined_wt_lb_ref", "combined_cg_in_ref", "ref_booster_prop_kg", "booster_prop_cg_in"]
             missing = [k for k in need if m.get(k) is None]
             if missing:
                 raise ValueError(f"mass_model.manual is missing {missing}")
-            sus = self.sustainers
-            if len(sus) > 1:
-                raise ValueError("mass_model.method: manual has one sustainer weight; set sustainer_selection.mode: best (or list one label)")
-            rows = []
-            for b in ms.boosters:
+
+            def row(b, s):
                 dm = (b.prop_mass_kg - m["ref_booster_prop_kg"]) * KG_TO_LB
                 wt = m["combined_wt_lb_ref"] + dm
                 cg = (m["combined_wt_lb_ref"] * m["combined_cg_in_ref"] + dm * m["booster_prop_cg_in"]) / wt
-                rows.append(MassRow(b.label, m["sustainer_wt_lb"], m["sustainer_cg_in"], round(wt, 3), round(cg, 3), b.prop_mass_kg, sustainer=sus[0].label))
-            log(f"mass: manual model, {len(rows)} boosters")
+                return MassRow(b.label, m["sustainer_wt_lb"], m["sustainer_cg_in"], round(wt, 3), round(cg, 3), b.prop_mass_kg, sustainer=s.label)
+
+            rows = [row(b, s) for s in sus for b in ms.boosters]
+            log(f"mass: manual model, {len(ms.boosters)} boosters x {len(sus)} sustainer candidate(s)")
         else:
             hw = self.cfg.hardware_mass_lb()
-            sus = self.sustainers
             have = {r.key: r for r in keep or []}
             todo = [(s, [b for b in ms.boosters if (b.label, s.label) not in have]) for s in sus]
             new = []
             if any(bs for _, bs in todo):
                 orr = self.openrocket()
                 new = [r for s, bs in todo for r in orr.mass_table(s, bs, hw)]
-            rows = [have[(b.label, s.label)] if (b.label, s.label) in have else next(r for r in new if r.key == (b.label, s.label)) for s in sus for b in ms.boosters]
+            by = {**have, **{r.key: r for r in new}}
+            rows = [by[(b.label, s.label)] for s in sus for b in ms.boosters]
             r0 = rows[0]
-            log(f"mass: OpenRocket {self.cfg.path('ork').name}, {len(ms.boosters)} boosters x {len(sus)} sustainer(s)" + (f" ({len(new)} pair(s) computed, {len(rows) - len(new)} cached)" if have else "") + ", dry mass " + (f"forced to {hw:g} lb (sustainer {r0.sustainer_dry_lb} + booster {r0.booster_dry_lb} lb; .ork scaled)" if hw is not None else f"{r0.sustainer_dry_lb + r0.booster_dry_lb:.1f} lb from the .ork") + f"; loaded: sustainer {min(r.sustainer_wt_lb for r in rows):.1f}-{max(r.sustainer_wt_lb for r in rows):.1f} lb; stack {min(r.combined_wt_lb for r in rows):.1f}-{max(r.combined_wt_lb for r in rows):.1f} lb")
+            log(f"mass: OpenRocket {self.cfg.path('ork').name}, {len(ms.boosters)} boosters x {len(sus)} sustainer candidate(s)" + (f" ({len(new)} pair(s) computed, {len(rows) - len(new)} cached)" if have else "") + ", dry mass " + (f"forced to {hw:g} lb (sustainer {r0.sustainer_dry_lb} + booster {r0.booster_dry_lb} lb; .ork scaled)" if hw is not None else f"{r0.sustainer_dry_lb + r0.booster_dry_lb:.1f} lb from the .ork") + f"; loaded: sustainer {min(r.sustainer_wt_lb for r in rows):.1f}-{max(r.sustainer_wt_lb for r in rows):.1f} lb; stack {min(r.combined_wt_lb for r in rows):.1f}-{max(r.combined_wt_lb for r in rows):.1f} lb")
         pd.DataFrame([r.__dict__ for r in rows]).to_csv(self.out / "mass_table.csv", index=False)
         (self.out / "mass_table.json").write_text(json.dumps(self._mass_signature(), indent=1))
         return rows
 
     def load_mass(self) -> dict[tuple[str, str], MassRow]:
-        """(booster label, sustainer label) -> MassRow, from the cached table
-        when it still matches the config, the boosters and the sustainers."""
+        """(booster, sustainer) labels -> MassRow; cached rows kept, gaps filled."""
         p = self.out / "mass_table.csv"
-        if not p.exists():
-            rows = self.stage_mass()
-        else:
+        rows: list[MassRow] = []
+        if p.exists():
             df = pd.read_csv(p, dtype={"booster": str, "sustainer": str}, keep_default_na=False)
-            names = {f.name for f in fields(MassRow)}
-            if "sustainer" not in df.columns:
-                log("mass: cached mass_table.csv is from an older version (no sustainer column) - recomputing")
-                rows = self.stage_mass()
+            try:
+                sig = json.loads((self.out / "mass_table.json").read_text())
+            except (OSError, ValueError):
+                sig = None
+            if "sustainer" not in df.columns or sig != self._mass_signature():
+                log("mass: cached mass_table.csv is stale (older version, or the .ork / mass model changed) - recomputing")
             else:
+                names = {f.name for f in fields(MassRow)}
                 rows = [MassRow(**{k: (str(v) if k in ("booster", "sustainer") else None if v == "" or pd.isna(v) else float(v)) for k, v in rec.items() if k in names}) for rec in df.to_dict("records")]
-                hw = self.cfg.hardware_mass_lb()
-                try:
-                    sig = json.loads((self.out / "mass_table.json").read_text())
-                except (OSError, ValueError):
-                    sig = None
-                if self.cfg["mass_model"]["method"] == "openrocket" and rows and rows[0].hardware_mass_lb != hw:
-                    log(f"mass: cached mass_table.csv was built with hardware_mass_lb={rows[0].hardware_mass_lb} (config now {hw}) - recomputing")
-                    rows = self.stage_mass()
-                elif sig is None:  # table from before the signature file: adopt it
-                    (self.out / "mass_table.json").write_text(json.dumps(self._mass_signature(), indent=1))
-                elif sig != self._mass_signature():
-                    log("mass: the .ork or the mass model changed since mass_table.csv was built - recomputing")
-                    rows = self.stage_mass()
-                else:
-                    have = {r.key for r in rows}
-                    if any((b.label, s.label) not in have for s in self.sustainers for b in self.ms.boosters):
-                        log("mass: cached mass_table.csv does not cover every (booster, sustainer) pair - computing the missing ones")
-                        rows = self.stage_mass(keep=rows)
+        have = {r.key for r in rows}
+        if any((b.label, s.label) not in have for s in self.ms.sustainer_candidates for b in self.ms.boosters):
+            if rows:
+                log("mass: cached mass_table.csv does not cover every (booster, sustainer candidate) pair - computing the missing ones")
+            rows = self.stage_mass(keep=rows)
         return {r.key: r for r in rows}
 
     # ---- stage 3: characterization -----------------------------------------

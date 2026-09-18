@@ -117,10 +117,13 @@ dotnet build native/RasaeroHost -c Release
 
 [native/README.md](native/README.md) explains the patch.
 
-**python** is `rpa/flightsim.py`, a planar 3-DOF gravity-turn integrator fed
-by RASAero's aero tables, its atmosphere conventions, the `.eng` curves and
-the OpenRocket masses. About 25 ms per flight. It is only as good as its
-agreement with RASAero, which `validate` measures:
+**python** is `rpa/flightsim.py`: RASAero's own flight loop (integration
+scheme, atmosphere, thrust and mass conventions, stage and apogee rules, even
+its float32 clock) in Python, fed by RASAero's exported aero tables, the
+`.eng` curves and the OpenRocket masses. About 15 ms per flight. On the ten
+reference flights it is within 0.01 % of RASAero's apogee (a few feet), with
+the weight, thrust and Mach histories matching row for row; `validate`
+measures that:
 
 ```
 python -m rpa aero                       # Aero Plots tables, once per vehicle revision
@@ -128,11 +131,11 @@ python -m rpa reference --cases 10       # ten RASAero reference flights
 python -m rpa validate                   # compare term by term -> output/validation/
 ```
 
-`validate` checks the atmosphere, CD lookup, drag reconstruction, weight
-history and flight numbers against the `validation.*` tolerances, and
-recovers RASAero's density profile from the exports (`density_calibration.csv`)
-for the python backend to use. Re-run it whenever the vehicle, the tables or
-the integrator change.
+`validate` checks the atmosphere, the CD lookup, the drag reconstruction,
+the weight and thrust histories and the flight numbers against the
+`validation.*` tolerances. Re-run it whenever the vehicle, the tables or the
+integrator change. Wind is not modelled (RASAero's pitch dynamics), so the
+python backend flies the site at zero wind.
 
 **openrocket** is OpenRocket headless. Different aero, previews only.
 
@@ -142,9 +145,12 @@ the integrator change.
 they depend on geometry alone. Files are named
 `<stack|sustainer>_alt<ft>[_noz<in>].csv`: `stack` means booster attached,
 `sustainer` the upper stage alone, `alt` the Mach-Alt altitude and `noz` the
-nozzle exit diameter behind the power-on CD. Export two or three altitudes and
-a few nozzle sizes spanning the motor set; the tool interpolates. Each file
-needs a Mach column and power-off and power-on CD columns. `rpa check`
+nozzle exit diameter behind the power-on CD. CD varies with altitude through
+the Reynolds number only, so `rpa aero` exports a table every 5000 ft (the
+flight reads them at the standard-atmosphere altitude with its Reynolds
+number), and power-on CD is power-off CD minus a base-drag term proportional
+to the nozzle area, so one nozzle per configuration serves every motor. Each
+file needs a Mach column and power-off and power-on CD columns. `rpa check`
 reports coverage.
 
 ### Reference flights

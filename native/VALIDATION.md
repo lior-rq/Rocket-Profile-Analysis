@@ -24,7 +24,7 @@ Time to apogee agrees to the 0.01 s step in every case; CD along the flight
 agrees to 2e-5 % (median); burnout, separation and ignition land on the same
 samples. The residual (0.2 ft over a 70,000 ft flight) is the x87-vs-IEEE
 float rounding expected from the plan, three orders of magnitude below the
-python backend's 1 % criterion.
+python backend's 0.1 % criterion.
 
 RASAero's own two-stage example (`vendor/rasaero/examples/AeroPac104K...`)
 carries results saved by the GUI: 113786.4 ft / 3125.964 fps / 98.33942 s.

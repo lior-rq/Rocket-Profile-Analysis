@@ -1,45 +1,61 @@
-"""Planar 3-DOF (point mass, gravity turn) two-stage trajectory integrator.
+"""Two-stage trajectory integrator: RASAero II's flight loop (class `y` of
+the decompiled engine, zero wind) in Python, fed by RASAero's exported
+aero tables (rpa.aero), its atmosphere (rpa.atmosphere), the .eng thrust
+curves and the OpenRocket masses. rpa.validate checks it term by term
+against RASAero exports; rpa.native runs the real engine.
 
-Replaces the RASAero GUI inside the search loop. Uses RASAero's own aero
-tables (rpa.aero), its launch-site atmosphere conventions (rpa.atmosphere),
-the .eng thrust curves and the OpenRocket mass numbers. rpa.validate checks
-it term by term against RASAero exports.
-
-Model
-  * zero wind, zero angle of attack: thrust and drag act along the velocity
-    vector; gravity turns the flight path (RASAero at WindSpeed=0 does the same)
-  * launch rail: while the distance travelled is less than RodLength, thrust
-    and drag act along the rod (RodAngle from vertical) but gravity acts
-    fully vertically - RASAero's model, verified from its exports: the
-    velocity vector leaves the rail ~0.3 deg below the rod angle, which
-    shows up as ~8 % more downrange velocity for the rest of the flight
-  * thrust: the .eng curve (sea-level) plus RASAero's altitude correction
-    (p_sea_level - p_ambient) * nozzle exit area, verified against exports
-  * mass: launch weight minus propellant consumed in proportion to impulse
-    delivered (the RASAero 'Weight' column convention)
-  * events: booster burnout = end of the booster thrust curve; separation is
-    a delay after burnout and sustainer ignition a delay after *separation*
-    (RASAero's convention, verified from its exports)
-  * drag: CD(Mach, altitude, power-on/off) from the tables of the current
-    configuration (stack until separation, sustainer alone afterwards)
-  * fixed-step RK4; the run stops at apogee
+What RASAero does, and this port reproduces
+  * time: the stage clock is a float32 accumulation of dt (0.01 -> 4.700013
+    at step 470); every event lands on that grid
+  * one step: atmosphere, Mach, CD and drag from the state at the START of
+    the step; thrust at the END time; weight = liftoff weight minus the
+    propellant burned up to the PREVIOUS step (the Weight column lags)
+  * on the rail (max altitude so far <= rod length * cos(rod angle)):
+    forward Euler; thrust and drag act along the rod, gravity fully
+    vertical; altitude and distance by the trapezoid rule; held down while
+    the vertical acceleration is negative
+  * off the rail: RK4 on the velocity with altitude, density, CD and thrust
+    frozen over the step and the drag recomputed from the substep speed;
+    then altitude += new vertical velocity * dt and distance by trapezoid;
+    gravity falls off as (R/(R + site + h))^2 and vx^2/(R + site + h) is
+    added to the vertical acceleration
+  * thrust: .eng curve (linear, (0,0) prepended) + (14.6958 - p_ambient[psi])
+    * nozzle exit area [in^2] while the curve is positive; power-on CD when
+    the curve is positive and the stage has a nozzle diameter
+  * mass: propellant leaves in proportion to the impulse delivered
+  * booster stage ends at the first step whose clock exceeds
+    separation delay + burn time; the sustainer clock restarts at 0, its
+    thrust starts at the ignition delay and its stage ends at the first
+    step that is below the stage's maximum altitude while the raw thrust
+    curve at the stage clock is zero (so a sustainer whose burn time is
+    shorter than its ignition delay never lights after apogee)
+  * CD depends on altitude only through the Reynolds number. The Aero
+    Plots tables were computed in the standard atmosphere while the flight
+    uses the site's, so a table is read at the standard-atmosphere altitude
+    whose Reynolds number equals the flight's (rpa.atmosphere)
+  * the run stops at apogee (RASAero goes on to the ground)
+Not reproduced: wind (RASAero's pitch dynamics need CNalpha, inertia and
+CG/CP; the site wind is ignored) and the "Rocket was Unstable" abort.
 """
 
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from .aero import STACK, SUSTAINER, AeroModel, AeroSet
-from .atmosphere import G0, STD_P0_PSF, Atmosphere
+from .atmosphere import G0, R_EARTH_FT, STD_P0_PSI, Atmosphere
 from .eng import Motor
 
-N_TO_LBF = 0.2248089
-KG_TO_LB = 2.2046226
-MAX_TABLE_MACH = 8.0  # CD grid cutoff; vehicle never gets near it (RASAero exports to Mach 25)
+N_TO_LBF = 0.22480902  # RASAero's own constants
+KG_TO_LB = 2.2046225
+MACH_MIN, MACH_MAX = 0.01, 25.0
+MAX_TABLE_MACH = 8.0  # CD grid cutoff; vehicle never gets near it
+RAD = 180.0 / math.pi
 
 
 def ref_area_ft2(diameter_in: float) -> float:
@@ -62,43 +78,29 @@ class Vehicle:
         return ref_area_ft2(self.ref_diameter_in)
 
 
-class _Curve:
-    """Thrust [lbf] and delivered-impulse fraction of a motor sampled on a
-    uniform time grid (t = 0, dt/2, dt, ...) for O(1) lookups."""
+class _Motor:
+    """A motor as RASAero's loop samples it: float32 point times, thrust
+    in lbf, propellant burned in proportion to the impulse delivered."""
 
-    def __init__(self, m: Motor, half_dt: float):
-        t = np.concatenate([[0.0], m.time_s])
-        f = np.concatenate([[0.0], m.thrust_n]) * N_TO_LBF
-        imp = np.concatenate([[0.0], np.cumsum(0.5 * (f[1:] + f[:-1]) * np.diff(t))])
-        total = imp[-1] if imp[-1] > 0 else 1.0
-        n = math.ceil(t[-1] / half_dt) + 2
-        grid = np.arange(n) * half_dt
-        self.n = n
-        self.burn_time = float(t[-1])
-        self.thrust = np.interp(grid, t, f, right=0.0).tolist()
-        self.frac = np.interp(grid, t, imp / total, right=1.0).tolist()
+    def __init__(self, m: Motor):
+        t = np.concatenate([[0.0], m.time_s]).astype(np.float32).astype(np.float64)
+        f = np.concatenate([[0.0], m.thrust_n]).astype(np.float32).astype(np.float64) * N_TO_LBF
+        self.t, self.f = t, f
+        self.burn32 = np.float32(t.max())
+        self.imp = np.concatenate([[0.0], np.cumsum(0.5 * (f[1:] + f[:-1]) * np.diff(t))])
+        self.total = self.imp[-1] if self.imp[-1] > 0 else 1.0
+        self.prop_lb = m.prop_mass_kg * KG_TO_LB
 
-
-class _AtmLookup:
-    """Density, speed of sound and pressure on the atmosphere's uniform
-    altitude grid, interpolated together in pure Python (one index
-    computation per call; called four times per integration step)."""
-
-    def __init__(self, dx: float, rho: np.ndarray, a: np.ndarray, p: np.ndarray):
-        self.dx = float(dx)
-        self.rho, self.a, self.p = rho.tolist(), a.tolist(), p.tolist()
-        self.n = len(self.rho)
-
-    def __call__(self, h: float) -> tuple[float, float, float]:
-        q = h / self.dx
-        if q <= 0.0:
-            return self.rho[0], self.a[0], self.p[0]
-        i = int(q)
-        if i >= self.n - 1:
-            return self.rho[-1], self.a[-1], self.p[-1]
-        w = q - i
-        rho, a, p = self.rho, self.a, self.p
-        return rho[i] + w * (rho[i + 1] - rho[i]), a[i] + w * (a[i + 1] - a[i]), p[i] + w * (p[i + 1] - p[i])
+    def sample(self, t32: np.ndarray, delay32: np.float32):
+        """(thrust curve lbf, propellant fraction, raw curve at the stage
+        clock) at each stage time; the first two offset by the delay."""
+        arg = (t32 - delay32).astype(np.float64)
+        curve = np.interp(arg, self.t, self.f, left=0.0, right=0.0)
+        i = np.clip(np.searchsorted(self.t, arg, side="right") - 1, 0, len(self.t) - 2)
+        imp = self.imp[i] + 0.5 * (self.f[i] + curve) * (arg - self.t[i])
+        frac = np.where(arg <= 0.0, 0.0, np.where(arg >= self.t[-1], 1.0, imp / self.total))
+        raw = np.interp(t32.astype(np.float64), self.t, self.f, left=0.0, right=0.0)
+        return curve, frac, raw
 
 
 class _CdLookup:
@@ -139,17 +141,57 @@ class _CdLookup:
         return c0 + wa * (c1 - c0)
 
 
+class _Flight:
+    """State carried across stages plus the summary counters."""
+
+    __slots__ = ("h", "x", "vx", "vy", "v", "max_h", "t_max", "max_v", "max_mach", "rail_exit_v", "t_ign", "rec")
+
+    def __init__(self, rec: dict | None):
+        self.h = self.x = self.vx = self.vy = self.v = 0.0
+        self.max_h = self.t_max = self.max_v = self.max_mach = 0.0
+        self.rail_exit_v = None
+        self.t_ign = None
+        self.rec = rec
+
+
+_COLS = ("time_s", "stage", "stage_time_s", "mach", "cd", "thrust_lb", "weight_lb", "drag_lb", "accel_fps2", "accel_v_fps2", "accel_h_fps2", "velocity_fps", "vel_v_fps", "vel_h_fps", "pitch_deg", "fpa_deg", "altitude_ft", "distance_ft")
+
+
 class FlightSim:
-    def __init__(self, aero: AeroSet, site: dict, pressure_is_sea_level: bool = True, dt: float = 0.01, max_time_s: float = 400.0, density_model: str = "rasaero", density_exponent: float = 5.05, calibration=None):
+    def __init__(self, aero: AeroSet, site: dict, dt: float = 0.01, max_time_s: float = 400.0):
         self.aero = aero
         self.site = site
         self.dt = float(dt)
         self.max_time_s = float(max_time_s)
-        self.atm = Atmosphere.from_site(site, pressure_is_sea_level=pressure_is_sea_level, density_model=density_model, density_exponent=density_exponent, calibration=calibration)
-        self.atm_lookup = _AtmLookup(self.atm.step_ft, self.atm.rho_table, self.atm.a_table, self.atm.p_table)
+        self.atm = Atmosphere.from_site(site)
         self.rod_len = float(site.get("rod_length_ft") or 0.0)
-        self.rod_angle = math.radians(float(site.get("rod_angle_deg") or 0.0))
+        self.rod_angle = (float(site.get("rod_angle_deg") or 0.0) or 0.0001) * math.pi / 180.0  # the GUI flies 0 as 0.0001 deg
+        wind = float(site.get("wind_speed_mph") or 0.0)
+        if wind:
+            warnings.warn(f"python backend flies at zero wind (site wind {wind:g} mph ignored)", stacklevel=2)
+        # t32[k] = k accumulations of float32(dt): RASAero's stage clock
+        n = int(round(self.max_time_s / self.dt))
+        self._t32 = np.concatenate([np.zeros(1, np.float32), np.cumsum(np.full(n, np.float32(self.dt), dtype=np.float32), dtype=np.float32)])
         self._cd_cache: dict[tuple[str, float | None], _CdLookup] = {}
+        # AGL altitude -> the standard-atmosphere altitude with the same
+        # Reynolds number (what the aero tables are indexed by), on a grid
+        std = Atmosphere.standard()
+        a_std = np.arange(0.0, 300_001.0, 100.0)
+        f_std = np.array([std.reynolds_factor(a) for a in a_std])  # decreasing
+        self._ae_step = 50.0
+        h = np.arange(0.0, 200_001.0, self._ae_step)
+        f_site = np.array([self.atm.reynolds_factor(x) for x in h])
+        self._ae = np.interp(-f_site, -f_std, a_std).tolist()
+
+    def aero_altitude(self, h_agl_ft: float) -> float:
+        """Altitude to read the aero tables at for a flight altitude."""
+        q = h_agl_ft / self._ae_step
+        if q <= 0.0:
+            return self._ae[0]
+        i = int(q)
+        if i >= len(self._ae) - 1:
+            return self._ae[-1]
+        return self._ae[i] + (q - i) * (self._ae[i + 1] - self._ae[i])
 
     def _cd(self, config: str, nozzle_in: float | None) -> _CdLookup:
         key = (config, None if nozzle_in is None else round(nozzle_in, 3))
@@ -160,187 +202,163 @@ class FlightSim:
     def run(self, veh: Vehicle, sep_delay_s: float, ign_delay_s: float, history: bool = True) -> tuple[dict, pd.DataFrame | None]:
         """Fly one two-stage trajectory. `history=False` skips the per-step
         record (the search only needs the summary)."""
+        rec = {c: [] for c in _COLS} if history else None
+        fl = _Flight(rec)
+        t32 = self._t32
+        bm, sm = _Motor(veh.booster), _Motor(veh.sustainer)
+        if rec:
+            fpa0 = (math.pi / 2.0 - self.rod_angle) * RAD
+            for c, val in zip(_COLS, (0.0, 1, 0.0, 0.0, 0.0, 0.0, veh.combined_wt_lb, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, fpa0, fpa0, 0.0, 0.0), strict=True):
+                rec[c].append(val)
+        # booster stage: runs until the stage clock exceeds separation delay + burn time
+        t_end = np.float32(np.float32(sep_delay_s) + bm.burn32)
+        past = np.flatnonzero(t32 > t_end)
+        n_b = int(past[0]) if len(past) else len(t32) - 1
+        tb = t32[1 : n_b + 1]
+        curve, frac, raw = bm.sample(tb, np.float32(0.0))
+        apogee = self._stage(fl, veh, 1, tb, np.float32(0.0), veh.combined_wt_lb, bm.prop_lb, curve, frac, raw, veh.booster_nozzle_in, self._cd(STACK, veh.booster_nozzle_in))
+        t_sep = None
+        if not apogee:
+            ts = t32[1:]
+            t_off = t32[n_b]
+            t_sep = float(np.float32(ts[0] + t_off))
+            curve, frac, raw = sm.sample(ts, np.float32(ign_delay_s))
+            self._stage(fl, veh, 2, ts, t_off, veh.sustainer_wt_lb, sm.prop_lb, curve, frac, raw, veh.sustainer_nozzle_in, self._cd(SUSTAINER, veh.sustainer_nozzle_in))
+        summary = {
+            "max_alt_ft": fl.max_h,
+            "t_apogee_s": fl.t_max,
+            "max_vel_fps": fl.max_v,
+            "max_mach": fl.max_mach,
+            "rail_exit_vel_fps": fl.rail_exit_v,
+            "t_burnout_s": float(bm.burn32),
+            "t_sep_s": t_sep,
+            "t_ign_s": fl.t_ign,
+            "ignition_suppressed": fl.t_ign is None,
+        }
+        if rec is None:
+            return summary, None
+        hist = pd.DataFrame(rec)
+        hist["stage"] = hist["stage"].astype(int)
+        return summary, hist
+
+    def _stage(self, fl: _Flight, veh: Vehicle, stage: int, t32: np.ndarray, t_off: np.float32, w0: float, prop_lb: float, curve: np.ndarray, frac: np.ndarray, raw: np.ndarray, nozzle_in: float | None, cd_tab: _CdLookup) -> bool:
+        """One stage of RASAero's loop. Returns True when the stage ended at
+        apogee (so no later stage flies)."""
         dt = self.dt
         hdt = 0.5 * dt
+        sixth = dt / 6.0
         S = veh.ref_area_ft2
-        bc = _Curve(veh.booster, hdt)
-        sc = _Curve(veh.sustainer, hdt)
-        t_bo = bc.burn_time
-        # events snapped to the step grid
-        k_sep = round((t_bo + sep_delay_s) / dt)
-        k_ign = round((t_bo + sep_delay_s + ign_delay_s) / dt)
-        cd_stack = self._cd(STACK, veh.booster_nozzle_in)
-        cd_sus = self._cd(SUSTAINER, veh.sustainer_nozzle_in)
-        w_bprop = veh.booster.prop_mass_kg * KG_TO_LB
-        w_sprop = veh.sustainer.prop_mass_kg * KG_TO_LB
-        w0 = veh.combined_wt_lb
-        w_sus = veh.sustainer_wt_lb
-        atm = self.atm_lookup
-        a_exit_b = math.pi * ((veh.booster_nozzle_in or 0.0) / 12.0) ** 2 / 4.0
-        a_exit_s = math.pi * ((veh.sustainer_nozzle_in or 0.0) / 12.0) ** 2 / 4.0
-        rod_len, rod_ang = self.rod_len, self.rod_angle
-        ux, uh = math.sin(rod_ang), math.cos(rod_ang)
-
-        def thrust_weight(k2: int, pa: float):
-            """thrust [lbf] at ambient pressure pa, weight [lb] at half-step index k2 (t = k2*dt/2)."""
-            dp = STD_P0_PSF - pa  # altitude thrust correction
-            thr = bc.thrust[k2] if k2 < bc.n else 0.0
-            if thr > 0.0:
-                thr += dp * a_exit_b
-            if k2 >= 2 * k_ign:
-                j = k2 - 2 * k_ign
-                ts = sc.thrust[j] if j < sc.n else 0.0
-                thr += ts + (dp * a_exit_s if ts > 0.0 else 0.0)
-                fs = sc.frac[j] if j < sc.n else 1.0
-            else:
-                fs = 0.0
-            fb = bc.frac[k2] if k2 < bc.n else 1.0
-            if k2 >= 2 * k_sep:
-                w = w_sus - w_sprop * fs
-            else:
-                w = w0 - w_bprop * fb - w_sprop * fs
-            return thr, w
-
-        def accel(k2: int, x: float, h: float, vx: float, vh: float, on_rail: bool):
-            hh = h if h > 0.0 else 0.0
-            r, a_s, pa = atm(hh)
-            thr, w = thrust_weight(k2, pa)
+        atm = self.atm.state
+        site_alt = self.atm.site_alt_ft
+        rail_h = self.rod_len * math.cos(self.rod_angle)
+        cos_u, sin_u = math.cos(self.rod_angle), math.sin(self.rod_angle)
+        fpa_rail = math.pi / 2.0 - self.rod_angle
+        a_exit = math.pi * ((nozzle_in or 0.0) / 2.0) ** 2  # in^2
+        power_ok = bool(nozzle_in)
+        ae, ae_step, n_ae = self._ae, self._ae_step, len(self._ae) - 1
+        t_abs = (t32 + t_off).astype(np.float64).tolist()
+        t_st = t32.astype(np.float64).tolist()
+        curve, frac, raw = curve.tolist(), frac.tolist(), raw.tolist()
+        rec = fl.rec
+        h, x, vx, vy, v = fl.h, fl.x, fl.vx, fl.vy, fl.v
+        max_h = h  # RASAero restarts the stage maximum at the handover altitude
+        w_prev = 0.0
+        for k in range(len(t_st)):
+            rho, a_s, p = atm(h)
+            mach = (v if v != 0.0 else 1e-7) / a_s
+            if mach < MACH_MIN:
+                mach = MACH_MIN
+            elif mach > MACH_MAX:
+                mach = MACH_MAX
+            tc = curve[k]
+            on = tc > 0.0
+            q = h / ae_step
+            i = int(q)
+            alt_t = ae[i] + (q - i) * (ae[i + 1] - ae[i]) if 0 <= i < n_ae else ae[-1 if i >= n_ae else 0]
+            cd = cd_tab(mach, alt_t, on and power_ok)
+            kd = 0.5 * rho * S * cd
+            drag0 = kd * v * v
+            thr = tc + (STD_P0_PSI - p) * a_exit if on else 0.0
+            w = w0 - prop_lb * w_prev
+            w_prev = frac[k]
             m = w / G0
-            v = math.hypot(vx, vh)
-            mach = v / a_s
-            cfg = cd_stack if k2 < 2 * k_sep else cd_sus
-            cd = cfg(mach, hh, thr > 0.0)
-            drag = 0.5 * r * v * v * S * cd
+            on_rail = max_h <= rail_h
             if on_rail:
-                a = (thr - drag) / m  # along the rod; gravity is not projected onto it (RASAero)
-                if a * uh - G0 < 0.0 and v <= 0.0:
-                    return 0.0, 0.0, thr, w, drag, cd, mach  # held down on the pad
-                return a * ux, a * uh - G0, thr, w, drag, cd, mach
-            if v > 1e-9:
-                ex, eh = vx / v, vh / v
+                f = thr - drag0
+                ay = (f * cos_u - w) / m
+                ax = f * sin_u / m
+                if ay < 0.0:
+                    ax = ay = 0.0  # held down on the pad
+                nvx, nvy = vx + ax * dt, vy + ay * dt
+                h += (vy + nvy) * hdt
+                if h < 0.0:
+                    h = 0.0
+                x += (vx + nvx) * hdt
+                fpa = pitch = fpa_rail
             else:
-                ex, eh = ux, uh
-            f = (thr - drag) / m
-            ah = f * eh - G0
-            if h <= 0.0 and v <= 1e-9 and ah < 0.0:
-                return 0.0, 0.0, thr, w, drag, cd, mach  # sitting on the pad (no rod)
-            return f * ex, ah, thr, w, drag, cd, mach
-
-        # ---- integrate -----------------------------------------------------
-        n_max = int(self.max_time_s / dt)
-        rec_t, rec_stage, rec_mach, rec_cd, rec_thr, rec_w, rec_drag = [], [], [], [], [], [], []
-        rec_ax, rec_ah, rec_vx, rec_vh, rec_x, rec_h = [], [], [], [], [], []
-        x = h = vx = vh = 0.0
-        max_h = t_max_h = max_v = max_mach = 0.0
-        on_rail = rod_len > 0.0
-        rail_exit_v = None
-        ignition_suppressed = False
-        k = 0
-        while k <= n_max:
-            k2 = 2 * k
-            if k == k_ign and vh < 0.0 and not on_rail:
-                # RASAero does not light the sustainer once the vehicle is
-                # already descending (verified: ref06); the flight just ends at apogee
-                k_ign = n_max + 10
-                ignition_suppressed = True
-            ax, ah, thr, w, drag, cd, mach = accel(k2, x, h, vx, vh, on_rail)
-            if history:
-                rec_t.append(k * dt)
-                rec_stage.append(1 if k < k_sep else 2)
-                rec_mach.append(mach)
-                rec_cd.append(cd)
-                rec_thr.append(thr)
-                rec_w.append(w)
-                rec_drag.append(drag)
-                rec_ax.append(ax)
-                rec_ah.append(ah)
-                rec_vx.append(vx)
-                rec_vh.append(vh)
-                rec_x.append(x)
-                rec_h.append(h)
-            else:
-                if h > max_h:
-                    max_h, t_max_h = h, k * dt
-                v_now = math.hypot(vx, vh)
-                if v_now > max_v:
-                    max_v = v_now
-                if mach > max_mach:
-                    max_mach = mach
-            if not on_rail and vh < 0.0 and h > 0.0 and (ignition_suppressed or k >= k_ign + sc.n // 2):
-                break  # apogee after the sustainer burn (RASAero ignites even on the way down)
-            if h < 0.0 and k > 10:
-                break  # ground impact before the sustainer ever lit
-            # RK4
-            k1 = (vx, vh, ax, ah)
-            s2 = (x + hdt * k1[0], h + hdt * k1[1], vx + hdt * k1[2], vh + hdt * k1[3])
-            a2 = accel(k2 + 1, *s2, on_rail)
-            k2v = (s2[2], s2[3], a2[0], a2[1])
-            s3 = (x + hdt * k2v[0], h + hdt * k2v[1], vx + hdt * k2v[2], vh + hdt * k2v[3])
-            a3 = accel(k2 + 1, *s3, on_rail)
-            k3v = (s3[2], s3[3], a3[0], a3[1])
-            s4 = (x + dt * k3v[0], h + dt * k3v[1], vx + dt * k3v[2], vh + dt * k3v[3])
-            a4 = accel(k2 + 2, *s4, on_rail)
-            k4v = (s4[2], s4[3], a4[0], a4[1])
-            x += dt / 6.0 * (k1[0] + 2 * k2v[0] + 2 * k3v[0] + k4v[0])
-            h += dt / 6.0 * (k1[1] + 2 * k2v[1] + 2 * k3v[1] + k4v[1])
-            vx += dt / 6.0 * (k1[2] + 2 * k2v[2] + 2 * k3v[2] + k4v[2])
-            vh += dt / 6.0 * (k1[3] + 2 * k2v[3] + 2 * k3v[3] + k4v[3])
-            if on_rail:
-                if vh < 0.0 and h <= 0.0:
-                    x = h = vx = vh = 0.0  # still held on the pad
-                if math.hypot(x, h) >= rod_len:
-                    on_rail = False
-                    rail_exit_v = math.hypot(vx, vh)
-            k += 1
-
-        if not history:
-            return {
-                "max_alt_ft": max_h,
-                "t_apogee_s": t_max_h,
-                "max_vel_fps": max_v,
-                "max_mach": max_mach,
-                "rail_exit_vel_fps": rail_exit_v,
-                "t_burnout_s": t_bo,
-                "t_sep_s": k_sep * dt,
-                "t_ign_s": None if ignition_suppressed else k_ign * dt,
-                "ignition_suppressed": ignition_suppressed,
-            }, None
-        t = np.array(rec_t)
-        vxa, vha = np.array(rec_vx), np.array(rec_vh)
-        v = np.hypot(vxa, vha)
-        axa, aha = np.array(rec_ax), np.array(rec_ah)
-        stage = np.array(rec_stage)
-        hist = pd.DataFrame(
-            {
-                "time_s": t,
-                "stage": stage,
-                "stage_time_s": np.where(stage == 1, t, t - k_sep * dt),
-                "mach": rec_mach,
-                "cd": rec_cd,
-                "thrust_lb": rec_thr,
-                "weight_lb": rec_w,
-                "drag_lb": rec_drag,
-                "accel_fps2": np.hypot(axa, aha),
-                "accel_v_fps2": aha,
-                "accel_h_fps2": axa,
-                "velocity_fps": v,
-                "vel_v_fps": vha,
-                "vel_h_fps": vxa,
-                "fpa_deg": np.degrees(np.arctan2(vha, np.where(v > 0, vxa, 1e-9))),
-                "altitude_ft": rec_h,
-                "distance_ft": rec_x,
-            }
-        )
-        i_ap = int(np.argmax(hist["altitude_ft"].to_numpy()))
-        summary = {
-            "max_alt_ft": float(hist["altitude_ft"].iloc[i_ap]),
-            "t_apogee_s": float(t[i_ap]),
-            "max_vel_fps": float(v.max()),
-            "max_mach": float(max(rec_mach)),
-            "rail_exit_vel_fps": rail_exit_v,
-            "t_burnout_s": t_bo,
-            "t_sep_s": k_sep * dt,
-            "t_ign_s": None if ignition_suppressed else k_ign * dt,
-            "ignition_suppressed": ignition_suppressed,
-        }
-        return summary, hist
+                g = 32.17399978637695 * (R_EARTH_FT / (h + R_EARTH_FT + site_alt)) ** 2
+                rl = R_EARTH_FT + site_alt + h
+                # RK4 on the velocity, everything else frozen over the step
+                ux, uy = vx, vy
+                if uy == 0.0:
+                    uy = vg = 1e-7
+                else:
+                    vg = math.hypot(ux, uy)
+                f = (thr - kd * (ux * ux + uy * uy)) / (m * vg)
+                ax1, ay1 = f * ux, f * uy - g + ux * ux / rl
+                ux, uy = vx + hdt * ax1, vy + hdt * ay1
+                if uy == 0.0:
+                    uy = vg = 1e-7
+                else:
+                    vg = math.hypot(ux, uy)
+                f = (thr - kd * (ux * ux + uy * uy)) / (m * vg)
+                ax2, ay2 = f * ux, f * uy - g + ux * ux / rl
+                ux, uy = vx + hdt * ax2, vy + hdt * ay2
+                if uy == 0.0:
+                    uy = vg = 1e-7
+                else:
+                    vg = math.hypot(ux, uy)
+                f = (thr - kd * (ux * ux + uy * uy)) / (m * vg)
+                ax3, ay3 = f * ux, f * uy - g + ux * ux / rl
+                ux, uy = vx + dt * ax3, vy + dt * ay3
+                if uy == 0.0:
+                    uy = vg = 1e-7
+                else:
+                    vg = math.hypot(ux, uy)
+                f = (thr - kd * (ux * ux + uy * uy)) / (m * vg)
+                ax4, ay4 = f * ux, f * uy - g + ux * ux / rl
+                dvx = sixth * (ax1 + 2.0 * ax2 + 2.0 * ax3 + ax4)
+                dvy = sixth * (ay1 + 2.0 * ay2 + 2.0 * ay3 + ay4)
+                nvx, nvy = vx + dvx, vy + dvy
+                x += (vx + nvx) * hdt
+                h += nvy * dt
+                ax, ay = dvx / dt, dvy / dt
+                if nvx == 0.0:
+                    fpa = pitch = math.pi / 2.0 if nvy >= 0.0 else -math.pi / 2.0
+                elif nvx > 0.0:
+                    fpa = pitch = math.atan(nvy / nvx)
+                else:
+                    fpa = math.atan(nvy / nvx)
+                    pitch = fpa + math.pi if nvy >= 0.0 else fpa - math.pi
+            vx, vy = nvx, nvy
+            v = math.hypot(vx, vy)
+            if rec is not None:
+                a_tot = math.hypot(ax, ay)
+                for c, val in zip(_COLS, (t_abs[k], stage, t_st[k], mach, cd, thr, w, drag0, -a_tot if ay < 0.0 else a_tot, ay, ax, v, vy, vx, pitch * RAD, fpa * RAD, h, x), strict=True):
+                    rec[c].append(val)
+            if h > max_h:
+                max_h = h
+                fl.max_h, fl.t_max = h, t_abs[k]
+            if on_rail and max_h > rail_h:
+                fl.rail_exit_v = v
+            if v > fl.max_v:
+                fl.max_v = v
+            if mach > fl.max_mach:
+                fl.max_mach = mach
+            if stage == 2 and on and fl.t_ign is None:
+                fl.t_ign = t_abs[k]
+            if (h < max_h or max_h == 0.0) and raw[k] == 0.0:
+                fl.h, fl.x, fl.vx, fl.vy, fl.v = h, x, vx, vy, v
+                return True
+        fl.h, fl.x, fl.vx, fl.vy, fl.v = h, x, vx, vy, v
+        return stage != 1  # a sustainer stage that runs out of time is over too

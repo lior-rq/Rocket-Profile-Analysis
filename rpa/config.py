@@ -94,23 +94,22 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     "backend": "python",  # python (RASAero tables) | rasaero_native (RASAero's engine, no VM) | rasaero (VM GUI) | openrocket (preview)
-    "python_sim": {
+    "python_sim": {  # RASAero's flight loop in Python (rpa.flightsim); atmosphere and site handling are RASAero's own
         "dt_s": 0.01,
         "max_time_s": 400.0,
-        "pressure_is_sea_level": True,  # launch-site Pressure is a barometric (sea-level reduced) reading
-        "density_model": "auto",  # auto/calibrated/rasaero/hydrostatic; auto picks calibrated if refs exist
-        "density_exponent": 5.05,
         "ref_diameter_in": None,  # null -> largest body diameter in the CDX1
         "workers": "auto",  # CPU processes for search batches: auto = cores - 1, 1 = serial
     },
     "aero_tables": {  # what `rpa aero` exports from RASAero's Aero Plots
-        "altitudes_ft": [20000.0, 40000.0],
-        "stack_nozzles_in": "auto",  # auto = min / middle / max booster nozzle exit diameter
-        "sustainer_nozzles_in": "auto",  # auto = min / max sustainer candidate nozzle exit diameter
+        # CD depends on altitude through the Reynolds number; a table every
+        # 5000 ft keeps the python backend within ~0.01 % of RASAero's apogee
+        "altitudes_ft": [float(a) for a in range(0, 100_001, 5000)],
+        "stack_nozzles_in": "auto",  # auto = the largest booster nozzle (power-on CD scales exactly to any other)
+        "sustainer_nozzles_in": "auto",  # auto = the largest sustainer candidate nozzle
         "plot_range": "Mach 5",
         "batch_altitudes": False,  # opt-in: all altitudes of one nozzle in one worker job - verify on the VM first
     },
-    "validation": {"apogee_tol_pct": 1.0, "mach_tol": 0.01, "cd_tol_pct": 2.0, "weight_tol_lb": 0.5, "mach_at_burnout_tol": 0.01},
+    "validation": {"apogee_tol_pct": 0.1, "mach_tol": 0.001, "cd_tol_pct": 0.5, "weight_tol_lb": 0.01, "mach_at_burnout_tol": 0.002},
     "worker": {
         "mode": "auto",  # auto (VM worker polls jobs/) | manual (you run RASAero by hand)
         "transport": "auto",  # agent (guest agent) | share (Z: WebDAV); auto picks agent if utmctl found

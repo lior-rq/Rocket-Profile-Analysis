@@ -3,16 +3,19 @@ export), used by the Python flight simulator.
 
 The tables depend only on the geometry, so they are exported once per
 vehicle revision into paths.aero_dir. RASAero evaluates them at a fixed
-altitude (<MachAlt>) and, for power-on drag, at the configuration's nozzle
-exit diameter, so files at several altitudes and nozzle sizes are exported
-and interpolated between.
+altitude (<MachAlt>, which sets the Reynolds number), so files at several
+altitudes are exported and interpolated between. Power-on drag is
+RASAero's power-off CD minus a base-drag term proportional to the nozzle
+exit area: CD_on = CD_off - K(Mach) * nozzle^2. One table with a known
+nozzle diameter therefore gives K, and with it the exact power-on CD for
+every motor.
 
 File naming (case-insensitive):   <config>_alt<ft>[_noz<in>].csv
     config : stack      (booster attached, i.e. the full two-stage vehicle)
              sustainer  (sustainer alone)
     alt    : the MachAlt altitude the table was exported at, feet
-    noz    : nozzle exit diameter used for the power-on columns, inches
-             (optional; a file without it is used for every nozzle size)
+    noz    : nozzle exit diameter the power-on columns were exported with,
+             inches (a file without it can only serve that one nozzle)
 e.g.  stack_alt3000_noz3.88.csv   sustainer_alt40000_noz2.4.csv
 
 Columns are matched by name, tolerant of RASAero's exact wording: a Mach
@@ -115,7 +118,6 @@ class AeroModel:
             raise ValueError("no aero tables")
         self.config = tables[0].config
         self.nozzle_in = nozzle_in
-        # group by altitude; within each altitude interpolate/select on nozzle
         by_alt: dict[float, list[AeroTable]] = {}
         for t in tables:
             by_alt.setdefault(t.altitude_ft, []).append(t)
@@ -124,30 +126,25 @@ class AeroModel:
         self._off = np.empty((len(self.alts), len(self._mach)))
         self._on = np.empty_like(self._off)
         for i, a in enumerate(self.alts):
-            self._off[i], self._on[i] = self._nozzle_blend(by_alt[a], nozzle_in)
+            self._off[i], self._on[i] = self._power_on(by_alt[a], nozzle_in)
 
     @property
     def mach_max(self) -> float:
         return float(self._mach.max())
 
-    def _nozzle_blend(self, tabs: list[AeroTable], noz: float | None):
-        def resample(t: AeroTable):
-            return np.interp(self._mach, t.mach, t.cd_off), np.interp(self._mach, t.mach, t.cd_on)
-
-        generic = [t for t in tabs if t.nozzle_in is None]
-        sized = sorted([t for t in tabs if t.nozzle_in is not None], key=lambda t: t.nozzle_in)
-        if noz is None or not sized:
-            return resample((generic or sized)[0])
-        if len(sized) == 1 or noz <= sized[0].nozzle_in:
-            return resample(sized[0])
-        if noz >= sized[-1].nozzle_in:
-            return resample(sized[-1])
-        for lo, hi in zip(sized, sized[1:], strict=False):
-            if lo.nozzle_in <= noz <= hi.nozzle_in:
-                w = (noz - lo.nozzle_in) / (hi.nozzle_in - lo.nozzle_in)
-                (o0, n0), (o1, n1) = resample(lo), resample(hi)
-                return o0 + w * (o1 - o0), n0 + w * (n1 - n0)
-        raise AssertionError
+    def _power_on(self, tabs: list[AeroTable], noz: float | None):
+        """(CD_off, CD_on) rows at one altitude. CD_off is the same in every
+        table; CD_on comes from the nozzle law (see the module docstring),
+        or from the one table there is when its nozzle is unknown."""
+        sized = sorted([t for t in tabs if t.nozzle_in], key=lambda t: t.nozzle_in)
+        src = sized[-1] if sized else tabs[0]
+        off = np.interp(self._mach, src.mach, src.cd_off)
+        on = np.interp(self._mach, src.mach, src.cd_on)
+        if not noz:
+            return off, off  # RASAero flies power-off CD without a nozzle diameter
+        if not sized:
+            return off, on
+        return off, off - (off - on) * (noz / src.nozzle_in) ** 2
 
     def cd_row(self, mach, alt_ft: float, power_on: bool) -> np.ndarray:
         """CD at one altitude for an array of Mach numbers."""
@@ -211,7 +208,6 @@ class AeroSet:
             out.append(f"{config}: tables stop at Mach {max(t.mach.max() for t in ts):.2f} < needed {max_mach:.2f}")
         if max(t.altitude_ft for t in ts) < 0.5 * max_alt_ft:
             out.append(f"{config}: highest table altitude {max(t.altitude_ft for t in ts):.0f} ft is far below the flight ceiling ~{max_alt_ft:.0f} ft")
-        nozs = [t.nozzle_in for t in ts if t.nozzle_in is not None]
-        if nozzle_in is not None and nozs and not (min(nozs) - 0.3 <= nozzle_in <= max(nozs) + 0.3):
-            out.append(f"{config}: nozzle {nozzle_in:.2f} in is outside the exported range {min(nozs):.2f}-{max(nozs):.2f} in")
+        if nozzle_in and not any(t.nozzle_in for t in ts):
+            out.append(f"{config}: no table names its nozzle diameter, so power-on CD cannot be scaled to {nozzle_in:.2f} in")
         return out

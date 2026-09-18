@@ -461,12 +461,14 @@ class Pipeline:
         ms = self.ms
         bn = sorted({b.nozzle_exit_in for b in ms.boosters if b.nozzle_exit_in})
         sn = sorted({m.nozzle_exit_in for m in ms.sustainer_candidates if m.nozzle_exit_in})
+        # power-on CD scales exactly with the nozzle area (rpa.aero), so one
+        # nozzle per configuration is enough; the largest gives K the most digits
         stack_noz = a["stack_nozzles_in"]
         if stack_noz == "auto":
-            stack_noz = sorted({bn[0], bn[len(bn) // 2], bn[-1]}) if bn else [None]
+            stack_noz = [bn[-1]] if bn else [None]
         sus_noz = a["sustainer_nozzles_in"]
         if sus_noz == "auto":
-            sus_noz = sorted({sn[0], sn[-1]}) if sn else [None]
+            sus_noz = [sn[-1]] if sn else [None]
         plan = [(STACK, n, alt) for alt in a["altitudes_ft"] for n in stack_noz] + [(SUSTAINER, n, alt) for alt in a["altitudes_ft"] for n in sus_noz]
         out = []
         for cfg_name, noz, alt in plan:
@@ -608,24 +610,7 @@ class Pipeline:
         (ref_dir / "altitude_offset.json").write_text(json.dumps({"offset_ft": be.alt_offset_ft or 0.0}))
         if hasattr(be, "close"):
             be.close()
-        from .validate import load_cases
-
-        self.write_density_calibration(load_cases(ref_dir))
         return made
-
-    def write_density_calibration(self, cases) -> Path | None:
-        """Recover RASAero's density-vs-altitude from the reference exports."""
-        from .atmosphere import calibrate_density
-        from .flightsim import ref_area_ft2
-
-        ref_dir = self.cfg.path("reference_dir")
-        cal = calibrate_density([c.history for c in cases], ref_area_ft2(self.ref_diameter_in))
-        if cal is None:
-            return None
-        out = ref_dir / "density_calibration.csv"
-        pd.DataFrame({"altitude_ft": cal[0], "density_slug_ft3": cal[1]}).to_csv(out, index=False)
-        log(f"  density calibration: {len(cal[0])} bins, {cal[0][0]:.0f}-{cal[0][-1]:.0f} ft -> {out.name}")
-        return out
 
     def stage_validate(self, engine: str | None = None) -> pd.DataFrame:
         """Compare a backend against the RASAero reference exports: the
@@ -637,7 +622,6 @@ class Pipeline:
         cases = load_cases(ref_dir)
         if not cases:
             raise FileNotFoundError(f"no reference cases (<name>.csv + <name>.json) in {ref_dir}")
-        self.write_density_calibration(cases)
         offset = 0.0
         if (ref_dir / "altitude_offset.json").exists():
             offset = float(json.loads((ref_dir / "altitude_offset.json").read_text())["offset_ft"])

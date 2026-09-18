@@ -3,15 +3,18 @@
 A reference case is a pair of files under paths.reference_dir:
     <name>.csv   RASAero 'View Data' export of the flight
     <name>.json  {"row": <SimRow dict>, "site": <launch site dict>}
-`python -m rpa reference` produces them through the VM worker; any RASAero
-run with known inputs works too.
+`python -m rpa reference` produces them through the native engine or the
+VM worker; any RASAero run with known inputs works too.
 
-The comparison is term by term so a disagreement points at its cause:
-    mach     our Mach from RASAero's own velocity+altitude vs its Mach column  -> atmosphere
-    cd       our CD lookup at RASAero's Mach/altitude/power state vs its CD    -> aero tables
-    drag     q*S*CD with RASAero's CD vs its Drag column                       -> density / reference area
-    weight   our weight(t) vs its Weight column                                -> mass model
-    flight   apogee, Mach at burnout, max Mach, time to apogee from our own run -> the integrator as a whole
+The comparison is term by term so a disagreement points at its cause. An
+export row holds Mach, CD and drag from the state at the start of its step,
+the weight from the step before and the velocity and altitude after it
+(rpa.flightsim), and the checks use RASAero's own columns that way:
+    mach     v/a from the previous row's velocity and altitude vs its Mach -> atmosphere
+    cd       our CD lookup at its Mach, altitude and power state vs its CD  -> aero tables
+    drag     q*S*CD with its CD vs its Drag column                          -> density / reference area
+    weight   our weight and thrust rows vs its rows, on the same time grid  -> mass model / motor
+    flight   apogee, Mach at burnout, max Mach, time to apogee from our run -> the integrator as a whole
 """
 
 from __future__ import annotations
@@ -143,15 +146,19 @@ def compare(case: RefCase, be: PythonBackend, alt_offset_ft: float = 0.0) -> dic
     rec = {"case": case.name, "booster": case.row.booster, "sep_delay_s": case.row.sep_delay_s, "ign_delay_s": case.row.ign_delay_s, "note": getattr(case, "note", "")}
     t_bo_ref = H.burnout_time(ref)
     t_sep_ref = H.separation_time(ref, after=t_bo_ref) or (t_bo_ref + case.row.sep_delay_s)
-    thrust_on = ref["thrust_lb"].to_numpy() > 0.5
+    t = ref["time_s"].to_numpy()
+    n = min(len(t), len(ours))  # our run stops at apogee; RASAero's descent rows use another loop
+    thrust_on = ref["thrust_lb"].to_numpy() > 0.0
     alt = np.clip(ref["altitude_ft"].to_numpy(), 0.0, None)
     vel = ref["velocity_fps"].to_numpy()
-    t = ref["time_s"].to_numpy()
-    flying = vel > 150.0  # skip rail/near-apogee samples, where Mach is two small numbers' ratio
+    # the state each row's Mach / CD / drag were computed from
+    alt_prev = np.concatenate([[0.0], alt[:-1]])
+    vel_prev = np.concatenate([[0.0], vel[:-1]])
+    flying = (vel_prev > 150.0) & (np.arange(len(t)) < n)  # skip rail/near-apogee samples, where Mach is two small numbers' ratio
 
     # -- atmosphere: Mach from RASAero's own velocity and altitude
-    a = np.array([sim.atm_lookup(h)[1] for h in alt])  # the integrator's own tabulated speed of sound
-    mach_ours = vel / a
+    a = np.array([sim.atm.speed_of_sound(h) for h in alt_prev])
+    mach_ours = vel_prev / a
     rec["mach_max_abs_err"] = float(np.max(np.abs(mach_ours - ref["mach"].to_numpy())[flying])) if flying.any() else np.nan
 
     # -- aero tables: CD lookup at RASAero's operating point
@@ -160,36 +167,24 @@ def compare(case: RefCase, be: PythonBackend, alt_offset_ft: float = 0.0) -> dic
         stack_cd = sim._cd(STACK, veh.booster_nozzle_in)
         sus_cd = sim._cd(SUSTAINER, veh.sustainer_nozzle_in)
         m = ref["mach"].to_numpy()
-        for i in range(len(ref)):
-            cd_ours[i] = (stack_cd if t[i] < t_sep_ref else sus_cd)(m[i], alt[i], bool(thrust_on[i]))
+        for i in range(n):
+            cfg, noz = (stack_cd, veh.booster_nozzle_in) if t[i] < t_sep_ref else (sus_cd, veh.sustainer_nozzle_in)
+            cd_ours[i] = cfg(m[i], sim.aero_altitude(alt_prev[i]), bool(thrust_on[i]) and bool(noz))
+        cd_ours[n:] = ref["cd"].to_numpy()[n:]
         e = _pct(cd_ours, ref["cd"].to_numpy(), 0.05)[flying]
         rec["cd_median_err_pct"] = float(np.median(e)) if len(e) else np.nan
         rec["cd_p95_err_pct"] = float(np.percentile(e, 95)) if len(e) else np.nan
     # -- density / reference area: drag reconstructed with RASAero's own CD
     if "drag_lb" in ref and "cd" in ref:
-        rho = np.array([sim.atm_lookup(h)[0] for h in alt])
-        drag_ours = 0.5 * rho * vel**2 * veh.ref_area_ft2 * ref["cd"].to_numpy()
+        rho = np.array([sim.atm.density(h) for h in alt_prev])
+        drag_ours = 0.5 * rho * vel_prev**2 * veh.ref_area_ft2 * ref["cd"].to_numpy()
         e = _pct(drag_ours, ref["drag_lb"].to_numpy(), 1.0)[flying]
         rec["drag_median_err_pct"] = float(np.median(e)) if len(e) else np.nan
-    # -- mass model / thrust: compare at RASAero's sample times, tolerating a
-    #    one-sample (dt) offset in where a step lands
-    n = min(len(t), int(np.searchsorted(t, ours["time_s"].iloc[-1])))
-    dt = float(np.median(np.diff(ours["time_s"]))) if len(ours) > 1 else 0.01
-
-    def shifted_err(col: str) -> float:
-        if not n:
-            return np.nan
-        target = ref[col].to_numpy()[:n]
-        to = ours["time_s"].to_numpy()
-        vo = ours[col].to_numpy()
-        errs = []
-        for s in (-2 * dt, -dt, 0.0, dt, 2 * dt):  # RASAero's event samples land within two steps of ours
-            idx = np.clip(np.rint((t[:n] + s - to[0]) / dt).astype(int), 0, len(vo) - 1)  # nearest sample, no interpolation across steps
-            errs.append(np.abs(vo[idx] - target))
-        return float(np.max(np.min(errs, axis=0)))
-
-    rec["weight_max_abs_err_lb"] = shifted_err("weight_lb")
-    rec["thrust_max_abs_err_lb"] = shifted_err("thrust_lb")
+    # -- mass model / thrust: row for row (both sides use RASAero's float32
+    #    clock, so the rows line up until our run stops at apogee)
+    rec["time_max_abs_err_s"] = float(np.max(np.abs(ours["time_s"].to_numpy()[:n] - t[:n])))
+    rec["weight_max_abs_err_lb"] = float(np.max(np.abs(ours["weight_lb"].to_numpy()[:n] - ref["weight_lb"].to_numpy()[:n])))
+    rec["thrust_max_abs_err_lb"] = float(np.max(np.abs(ours["thrust_lb"].to_numpy()[:n] - ref["thrust_lb"].to_numpy()[:n])))
     rec["t_burnout_ref_s"], rec["t_burnout_ours_s"] = t_bo_ref, summ["t_burnout_s"]
     rec["t_sep_ref_s"], rec["t_sep_ours_s"] = t_sep_ref, summ["t_sep_s"]
     rec["t_ign_ref_s"], rec["t_ign_ours_s"] = H.ignition_time(ref, after=t_bo_ref), summ["t_ign_s"]
@@ -199,10 +194,11 @@ def compare(case: RefCase, be: PythonBackend, alt_offset_ft: float = 0.0) -> dic
     rec["apogee_err_pct"] = 100.0 * (summ["max_alt_ft"] - ap_ref) / ap_ref
     rec["t_apogee_ref_s"], rec["t_apogee_ours_s"] = tap_ref, summ["t_apogee_s"]
     rec["mach_burnout_ref"] = H.value_at(ref, "mach", t_bo_ref)
-    rec["mach_burnout_ours"] = H.value_at(ours, "mach", summ["t_burnout_s"])
+    rec["mach_burnout_ours"] = H.value_at(ours, "mach", t_bo_ref)
     rec["mach_burnout_err"] = rec["mach_burnout_ours"] - rec["mach_burnout_ref"]
     rec["max_mach_ref"], rec["max_mach_ours"] = float(ref["mach"].max()), summ["max_mach"]
     rec["max_vel_ref_fps"], rec["max_vel_ours_fps"] = float(ref["velocity_fps"].max()), summ["max_vel_fps"]
+    rec["altitude_max_abs_err_ft"] = float(np.max(np.abs(ours["altitude_ft"].to_numpy()[:n] - ref["altitude_ft"].to_numpy()[:n])))
     # Mach-vs-time agreement while attached (what the profile rules look at)
     tt = t[(t <= t_sep_ref) & flying]
     if len(tt):

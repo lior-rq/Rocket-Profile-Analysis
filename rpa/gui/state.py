@@ -385,20 +385,11 @@ class StateCollector:
                     cases.append({"name": js.stem, "booster": row.get("booster"), "sustainer": row.get("sustainer"), "sep_delay_s": row.get("sep_delay_s"), "ign_delay_s": row.get("ign_delay_s"), "apogee_ft": row.get("max_alt_ft"), "max_vel_fps": row.get("max_vel_fps"), "mtime": _mtime(csv), "site": d.get("site")})
                 except (OSError, ValueError):
                     cases.append({"name": js.stem, "error": "unreadable"})
-        cal = file_info(ref_dir / "density_calibration.csv", root)
-        cal_info = None
-        if cal["exists"]:
-            try:
-                cdf = pd.read_csv(ref_dir / "density_calibration.csv")
-                cal_info = {"bins": len(cdf), "alt_min_ft": float(cdf["altitude_ft"].min()), "alt_max_ft": float(cdf["altitude_ft"].max())}
-            except Exception:
-                cal_info = None
         ref_mtime = _newest([ref_dir / (c["name"] + ".csv") for c in cases])
         reference = {
             "status": "ok" if len(cases) >= 5 else "partial" if cases else "todo",
             "cases": cases,
             "n": len(cases),
-            "calibration": {**cal, "info": cal_info},
             "dir": ref_dir.relative_to(root).as_posix() if root in ref_dir.parents else str(ref_dir),
             "stale": bool(ref_mtime and (ref_mtime < (_mtime(cdx1) or 0))),
         }

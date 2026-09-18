@@ -65,7 +65,6 @@ def input_files(cfg, stage: str) -> list[Path]:
         aero = cfg.path("aero_dir")
         if aero.exists():
             files += sorted(aero.glob("*.csv"))
-        files.append(cfg.path("reference_dir") / "density_calibration.csv")
     return files
 
 

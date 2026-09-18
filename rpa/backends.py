@@ -265,17 +265,7 @@ class PythonBackend(SimBackend):
         self.workers = max(1, (os.cpu_count() or 2) - 1) if w in (None, "auto") else max(1, int(w))
         self._pool = None
         self.aero = AeroSet.load(cfg.path("aero_dir"))
-        model = str(ps.get("density_model", "auto"))
-        calibration = None
-        cal_file = cfg.path("reference_dir") / "density_calibration.csv"
-        if model in ("auto", "calibrated") and cal_file.exists():
-            tab = pd.read_csv(cal_file)
-            calibration = (tab["altitude_ft"].to_numpy(float), tab["density_slug_ft3"].to_numpy(float))
-            model = "calibrated"
-            log(f"  [python] density profile calibrated from RASAero exports ({cal_file.name}, {len(tab)} bins to {tab['altitude_ft'].max():.0f} ft)")
-        elif model == "auto":
-            model = "rasaero"
-        self.sim = FlightSim(self.aero, site, pressure_is_sea_level=bool(ps["pressure_is_sea_level"]), dt=float(ps["dt_s"]), max_time_s=float(ps["max_time_s"]), density_model=model, density_exponent=float(ps.get("density_exponent", 5.05)), calibration=calibration)
+        self.sim = FlightSim(self.aero, site, dt=float(ps["dt_s"]), max_time_s=float(ps["max_time_s"]))
         self.ref_diameter_in = float(ref_diameter_in)
         self.history_dir = cfg.output_dir / "histories"
         self.history_dir.mkdir(parents=True, exist_ok=True)

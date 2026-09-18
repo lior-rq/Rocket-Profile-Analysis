@@ -82,28 +82,26 @@ mass_model:
 
 backend: rasaero_native           # rasaero_native (RASAero's engine, bundled) | python (RASAero tables) | rasaero (VM GUI) | openrocket (preview)
 
-python_sim:
+python_sim:                       # RASAero's flight loop in Python (rpa/flightsim.py)
   dt_s: 0.01
   max_time_s: 400
-  pressure_is_sea_level: true     # launch-site Pressure is the barometric (sea-level reduced) reading
-  density_model: auto             # auto/calibrated/rasaero/hydrostatic; auto picks calibrated if refs exist
-  density_exponent: 5.05
   ref_diameter_in: null           # null = largest body diameter found in the CDX1
   workers: auto                   # CPU processes for the search batches (auto = cores - 1, 1 = serial)
 
 aero_tables:                      # `rpa aero`: Aero Plots exports (once per vehicle revision)
-  altitudes_ft: [20000, 40000]    # Mach-Alt altitude per table (CD is nearly altitude-independent here)
-  stack_nozzles_in: auto          # auto = min / middle / max booster nozzle exit diameter
-  sustainer_nozzles_in: auto      # auto = min / max sustainer nozzle exit diameter
+  altitudes_ft: [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000, 55000, 60000, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000]
+                                  # Mach-Alt altitude per table; CD follows the Reynolds number, 5000 ft steps keep apogee within ~0.01 %
+  stack_nozzles_in: auto          # auto = largest booster nozzle (power-on CD scales exactly to any nozzle)
+  sustainer_nozzles_in: auto      # auto = largest sustainer nozzle
   plot_range: "Mach 5"
   batch_altitudes: true          # opt-in speedup: all altitudes of one nozzle in one worker job - verify on the VM first
 
 validation:                       # `rpa validate` pass criteria vs RASAero reference exports
-  apogee_tol_pct: 1.0
-  mach_tol: 0.01
-  cd_tol_pct: 2.0
-  weight_tol_lb: 0.5
-  mach_at_burnout_tol: 0.01
+  apogee_tol_pct: 0.1
+  mach_tol: 0.001
+  cd_tol_pct: 0.5
+  weight_tol_lb: 0.01
+  mach_at_burnout_tol: 0.002
 
 worker:
   mode: auto                      # auto = VM worker polls jobs/ ; manual = you drive RASAero by hand

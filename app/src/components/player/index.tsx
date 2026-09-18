@@ -90,6 +90,14 @@ export function usePlayer(end: number, T: T6, hist: Hist, key: string): Player {
   return { t, playing, speed, end, snap, seek: (v) => { tRef.current = clampT(v); setT(tRef.current); setPreview(null); }, preview: (v) => setPreview(clampT(v)), clearPreview: () => setPreview(null), toggle: () => (playingRef.current ? pause() : play()), setSpeed: (x) => { speedRef.current = x; setSpeed(x); } };
 }
 
+/* ---- module panel: one bordered box per part of the player ---------------------- */
+export function Module({ title, extra, children, className, bodyClass }: { title: ReactNode; extra?: ReactNode; children: ReactNode; className?: string; bodyClass?: string }) {
+  return <section className={cn("fc-module", className)}>
+    <header className="fc-module-head"><div className="fc-module-title">{title}</div>{extra ? <div className="fc-module-extra">{extra}</div> : null}</header>
+    <div className={cn("fc-module-body", bodyClass)}>{children}</div>
+  </section>;
+}
+
 /* ---- vehicle diagram ----------------------------------------------------------- */
 export function noseProfile(shape: string, L: number, R: number, n = 28) {
   const s = String(shape || "").toLowerCase(); const pts: [number, number][] = [];
@@ -184,7 +192,7 @@ export function AscentTrack({ r, cfg, d, T, snap }: { r: any; cfg: any; d: any; 
   if (isNum(T[2]) && snap.t >= (T[2] as number)) { if (sepRef.current === null) sepRef.current = isNum(snap.alt) ? snap.alt : 0; const dt = snap.t - (T[2] as number); booster = { y: Math.min(gBot - 6, y(sepRef.current) + 30 * dt * dt), rot: dt * 25, op: Math.max(0, 1 - dt / 6) }; } else sepRef.current = null;
   const gauge = () => { const sub = cfg.profiles.subsonic_max_mach, sup = cfg.profiles.supersonic_min_mach; const gmax = Math.max(sup * 1.5, (r.max_mach || 0) * 1.1, 1.6); const x = (m: number) => Math.max(0, Math.min(100, (m / gmax) * 100)); return <div className="mach-gauge mt-1"><svg viewBox="0 0 100 8" preserveAspectRatio="none"><rect className="mg-sub" x="0" y="0" width={x(sub)} height="8" /><rect className="mg-trans" x={x(sub)} y="0" width={x(sup) - x(sub)} height="8" /><rect className="mg-sup" x={x(sup)} y="0" width={100 - x(sup)} height="8" /><rect className="mg-mark" x={isNum(snap.mach) ? Math.max(0, x(snap.mach) - 1) : 0} y="0" width="2" height="8" /></svg></div>; };
   const Tile = ({ label, value, zone, extra }: { label: string; value: string; zone?: string; extra?: ReactNode }) => <div className={cn("hud-tile", zone)}><div className="text-[10px] uppercase text-muted">{label}</div><div className="text-[14px] font-semibold">{value}</div>{extra}</div>;
-  return <div className="flex h-full min-h-[280px] gap-2">
+  return <div className="flex min-h-[280px] flex-1 gap-2">
     <div ref={ref} className="ascent-svg relative min-w-0 flex-1 self-stretch">
       {W && H ? <svg className="absolute inset-0" width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
         <defs><linearGradient id="rk-flame-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fef08a" /><stop offset=".45" stopColor="#f97316" /><stop offset="1" stopColor="#ef4444" stopOpacity="0" /></linearGradient></defs>
@@ -294,16 +302,15 @@ export function ThrustChart({ m, color, kind, T, snap }: { m: any; color: string
 }
 export function MotorPanel({ kind, m, err, r, T, snap }: { kind: "booster" | "sustainer"; m: any; err?: string; r: any; T: T6; snap: Snap }) {
   const color = kind === "booster" ? "var(--c2)" : "var(--c1)";
-  const head = (name: ReactNode, extra?: ReactNode) => <div className="mb-2 flex flex-wrap items-center gap-2"><span className="rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase text-white" style={{ background: color }}>{kind}</span><b>{name}</b>{extra}</div>;
-  if (!m) return <div className="card tight">{head(kind === "booster" ? r.booster : r.sustainer || "—")}<Callout kind="warn">{err || "motor not found"}</Callout></div>;
+  const head = (name: ReactNode, extra?: ReactNode) => <span className="flex flex-wrap items-center gap-2 normal-case tracking-normal"><span className="rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase text-white" style={{ background: color }}>{kind}</span><b className="text-[13px] text-fg">{name}</b>{extra}</span>;
+  if (!m) return <Module title={head(kind === "booster" ? r.booster : r.sustainer || "—")}><Callout kind="warn">{err || "motor not found"}</Callout></Module>;
   const burnEnd = kind === "booster" ? T[1] : T[4], burnStart = kind === "booster" ? 0 : T[3];
   const burning = isNum(burnStart) && isNum(burnEnd) && snap.t >= burnStart && snap.t <= burnEnd;
-  return <div className="card tight">
-    {head(m.label, <>{m.designation !== m.label ? <span className="text-[12px] text-muted">{m.designation}</span> : null}{burning ? <span className="rounded-full bg-run-bg px-2 text-[11px] text-run">burning</span> : null}<a className="ml-auto text-[12px] text-accent" href={`${BASE}/download/eng?kind=${kind}&label=${encodeURIComponent(m.label)}`} download title={`download ${m.label}.eng`}>⬇ .eng</a></>)}
-    <StatList className="mb-2"><Stat label="total impulse" value={fmt(m.total_impulse_ns, 0)} unit={`N·s${m.impulse_class ? " · " + m.impulse_class : ""}`} /><Stat label="burn time" value={fmt(m.burn_time_s, 2)} unit="s" /><Stat label="avg / peak" value={`${fmt(m.avg_thrust_n, 0)} / ${fmt(m.peak_thrust_n, 0)}`} unit="N" /><Stat label="propellant" value={fmt(m.prop_mass_kg, 2)} unit="kg" sub={`${fmt(m.prop_mass_kg * KG_TO_LB, 2)} lb`} /><Stat label="size" value={`${fmt(m.diameter_mm, 0)} × ${fmt(m.length_mm, 0)}`} unit="mm" /><Stat label="nozzle throat / exit" value={`${fmt(m.nozzle_throat_in, 2)} / ${fmt(m.nozzle_exit_in, 2)}`} unit="in" /></StatList>
+  return <Module title={head(m.label, <>{m.designation !== m.label ? <span className="text-[12px] font-normal text-muted">{m.designation}</span> : null}{burning ? <span className="rounded-full bg-run-bg px-2 text-[11px] font-normal text-run">burning</span> : null}</>)} extra={<a className="text-accent" href={`${BASE}/download/eng?kind=${kind}&label=${encodeURIComponent(m.label)}`} download title={`download ${m.label}.eng`}>⬇ .eng</a>}>
+    <StatList grid className="mb-2"><Stat label="total impulse" value={fmt(m.total_impulse_ns, 0)} unit={`N·s${m.impulse_class ? " · " + m.impulse_class : ""}`} /><Stat label="burn time" value={fmt(m.burn_time_s, 2)} unit="s" /><Stat label="avg / peak" value={`${fmt(m.avg_thrust_n, 0)} / ${fmt(m.peak_thrust_n, 0)}`} unit="N" /><Stat label="propellant" value={fmt(m.prop_mass_kg, 2)} unit="kg" sub={`${fmt(m.prop_mass_kg * KG_TO_LB, 2)} lb`} /><Stat label="size" value={`${fmt(m.diameter_mm, 0)} × ${fmt(m.length_mm, 0)}`} unit="mm" /><Stat label="nozzle throat / exit" value={`${fmt(m.nozzle_throat_in, 2)} / ${fmt(m.nozzle_exit_in, 2)}`} unit="in" /></StatList>
     <ThrustChart m={m} color={color} kind={kind} T={T} snap={snap} />
     <div className="mt-1 font-mono text-[11px] text-muted" title={m.file}>{m.file.split("/").pop()}{m.n_in_file > 1 ? ` (motor ${m.designation} of ${m.n_in_file})` : ""}</div>
-  </div>;
+  </Module>;
 }
 
 /* ---- the whole flight configuration card --------------------------------------------- */
@@ -318,15 +325,15 @@ export function FlightConfig({ r, dz, hist, histKind, cfg, d, onPlayerChange }: 
   const canZip = !!(b && s);
   const q = `booster=${encodeURIComponent(r.booster)}&sustainer=${encodeURIComponent(sLabel)}`;
   return <div className="card flight-config outline-none" tabIndex={0} onKeyDown={(e) => { if (e.code === "Space") { e.preventDefault(); player.toggle(); } else if (e.code === "ArrowRight") { e.preventDefault(); player.seek(player.t + (e.shiftKey ? 1 : 0.1)); } else if (e.code === "ArrowLeft") { e.preventDefault(); player.seek(player.t - (e.shiftKey ? 1 : 0.1)); } else if (e.code === "Home") { e.preventDefault(); player.seek(0); } else if (e.code === "End") { e.preventDefault(); player.seek(player.end); } }}>
-    <div className="mb-3 flex flex-wrap items-center gap-2"><b>Flight configuration</b>{histKind === "estimated" ? <span className="rounded-full bg-warn-bg px-2 text-[11px] text-warn" title="estimate; run verify for the checked flight">estimated</span> : null}<span className="flex-1" />
+    <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-line pb-2"><b>Flight configuration</b>{histKind === "estimated" ? <span className="rounded-full bg-warn-bg px-2 text-[11px] text-warn" title="estimate; run verify for the checked flight">estimated</span> : null}<span className="flex-1" />
       {b ? <a className="text-[12px] text-accent" href={`${BASE}/download/eng?kind=booster&label=${encodeURIComponent(b.label)}`} download>⬇ booster</a> : null}{s ? <a className="text-[12px] text-accent" href={`${BASE}/download/eng?kind=sustainer&label=${encodeURIComponent(sLabel)}`} download>⬇ sustainer</a> : null}
       <a className={cn("rounded-md border border-accent bg-accent px-2 py-0.5 text-[12px] text-white", !canZip && "opacity-50")} href={canZip ? `${BASE}/download/combo?${q}&profile=${encodeURIComponent(r.profile || "")}` : undefined} download onClick={(e) => { if (!canZip) { e.preventDefault(); toast.error("cannot build the combo: a motor is missing"); } else toast(`downloading ${r.booster} + ${sLabel} motor combo`); }}>⬇ combo</a></div>
     <div className="grid gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
       <div className="flex flex-col gap-3">
-        <div><div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-muted"><span>Vehicle</span><span className="font-normal normal-case tracking-normal">{(dz.vehicle && dz.vehicle.file) || "?"} · {dz.vehicle ? fmt(dz.vehicle.total_length_in, 1) : "?"} in overall · {dz.vehicle ? fmt(dz.vehicle.max_diameter_in, 2) : "?"} in dia</span></div><RocketDiagram r={r} dz={dz} snap={player.snap} /></div>
-        <div><div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-muted"><span>Timeline</span><span className="flex items-center gap-1.5 normal-case tracking-normal"><Button size="sm" variant="primary" title="play / pause (space)" onClick={player.toggle}>{player.playing ? "❚❚" : "▶"}</Button><Select className="h-7" value={player.speed} onChange={(e) => player.setSpeed(Number(e.target.value))}>{[1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</Select><span className="text-[11px] font-normal text-faint"><span className="kbd">space</span> play · <span className="kbd">←</span><span className="kbd">→</span> step · <span className="kbd">shift</span> ×10</span></span></div><StagingTimeline dz={dz} player={player} T={T} /></div>
+        <Module title="Vehicle" extra={<>{(dz.vehicle && dz.vehicle.file) || "?"} · {dz.vehicle ? fmt(dz.vehicle.total_length_in, 1) : "?"} in overall · {dz.vehicle ? fmt(dz.vehicle.max_diameter_in, 2) : "?"} in dia</>}><RocketDiagram r={r} dz={dz} snap={player.snap} /></Module>
+        <Module title="Timeline" extra={<><Button size="sm" variant="primary" title="play / pause (space)" onClick={player.toggle}>{player.playing ? "❚❚" : "▶"}</Button><Select className="h-7" value={player.speed} onChange={(e) => player.setSpeed(Number(e.target.value))}>{[1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</Select><span className="ml-1 text-faint"><span className="kbd">space</span> play · <span className="kbd">←</span><span className="kbd">→</span> step · <span className="kbd">shift</span> ×10</span></>}><StagingTimeline dz={dz} player={player} T={T} /></Module>
       </div>
-      <div><div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Ascent</div><AscentTrack r={r} cfg={cfg} d={d} T={T} snap={player.snap} /></div>
+      <Module title="Ascent" bodyClass="flex flex-col"><AscentTrack r={r} cfg={cfg} d={d} T={T} snap={player.snap} /></Module>
     </div>
     <div className="mt-3 grid gap-3 md:grid-cols-2"><MotorPanel kind="booster" m={b} err={dz.booster_error} r={r} T={T} snap={player.snap} /><MotorPanel kind="sustainer" m={s} err={dz.sustainer_error} r={r} T={T} snap={player.snap} /></div>
   </div>;

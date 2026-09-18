@@ -20,12 +20,13 @@ export function KV({ pairs }: { pairs: (readonly [ReactNode, ReactNode] | null |
   return <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[13px]">{pairs.filter(Boolean).map((p, i) => { const [k, v] = p as [ReactNode, ReactNode]; return <div key={i} className="contents"><div className="text-muted">{k}</div><div>{v}</div></div>; })}</div>;
 }
 
-export function Stat({ label, value, unit, cls, sub }: { label: string; value: ReactNode; unit?: ReactNode; cls?: string | null; sub?: ReactNode }) {
+export function Stat({ label, value, unit, cls, sub, wide }: { label: string; value: ReactNode; unit?: ReactNode; cls?: string | null; sub?: ReactNode; wide?: boolean }) {
   if (unit && typeof unit === "string" && unit.length > 12 && !sub) { sub = unit; unit = undefined; }
   const color = cls === "ok" ? "text-ok" : cls === "warn" ? "text-warn" : cls === "err" ? "text-err" : "";
-  return <div className="min-w-[110px] rounded-md border border-line bg-panel-2 px-3 py-2" title={typeof sub === "string" ? sub : undefined}><div className="text-[11px] uppercase tracking-wide text-muted truncate" title={label}>{label}</div><div className={cn("text-[17px] font-semibold leading-6 truncate", color)}>{value}{unit ? <small className="ml-1 text-[11px] font-normal text-muted">{unit}</small> : null}</div>{sub ? <div className="text-[11px] text-muted truncate">{sub}</div> : null}</div>;
+  return <div className={cn("min-w-[110px] rounded-md border border-line bg-panel-2 px-3 py-2", wide && "col-span-2")} title={typeof sub === "string" ? sub : undefined}><div className="text-[11px] uppercase tracking-wide text-muted truncate" title={label}>{label}</div><div className={cn("text-[17px] font-semibold leading-6 truncate", color)}>{value}{unit ? <small className="ml-1 text-[11px] font-normal text-muted">{unit}</small> : null}</div>{sub ? <div className="text-[11px] text-muted truncate">{sub}</div> : null}</div>;
 }
-export function StatList({ children, className }: { children: ReactNode; className?: string }) { return <div className={cn("flex flex-wrap gap-2", className)}>{children}</div>; }
+/* grid: tiles fill the row edge to edge instead of hugging the left. */
+export function StatList({ children, className, grid }: { children: ReactNode; className?: string; grid?: boolean }) { return <div className={cn(grid ? "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2" : "flex flex-wrap gap-2", className)}>{children}</div>; }
 
 export function CmdPreview({ stage, args }: { stage: string; args?: string[] }) {
   return <div className="mt-2 font-mono text-[12px] text-muted" title="the equivalent command line">$ rpa <b className="text-fg">{[stage, ...(args || [])].join(" ")}</b></div>;
@@ -65,12 +66,14 @@ export function RunButton({ stage, args = [], label, primary, disabled, title, c
   </>;
 }
 
-export function ActionPanel({ title, prereqs = [], buttons, options, notes, cmd, vm }: { title?: string; prereqs?: { label: string; ok: boolean | "warn"; hint?: string }[]; buttons?: ReactNode; options?: ReactNode; notes?: ReactNode; cmd?: ReactNode; vm?: boolean }) {
+/* options sit beside the buttons; stats get the full width under them. */
+export function ActionPanel({ title, prereqs = [], buttons, options, stats, notes, cmd, vm }: { title?: string; prereqs?: { label: string; ok: boolean | "warn"; hint?: string }[]; buttons?: ReactNode; options?: ReactNode; stats?: ReactNode; notes?: ReactNode; cmd?: ReactNode; vm?: boolean }) {
   const missing = prereqs.filter((p) => p.ok === false);
   return <div className="rounded-[var(--radius-card)] border border-accent/30 bg-accent-bg/30 p-4 dark:bg-accent-bg/20">
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div className="text-[13px] font-semibold uppercase tracking-wide text-muted">{title || "Run this step"}{vm ? <Badge status="info" className="ml-2 normal-case tracking-normal">RASAero engine</Badge> : null}</div>
       {prereqs.length ? <div className="flex flex-wrap gap-1.5">{prereqs.map((p, i) => <span key={i} title={p.hint || ""} className={cn("rounded-full border px-2 py-[1px] text-[11px]", p.ok === false ? "border-err/40 bg-err-bg text-err" : p.ok === "warn" ? "border-warn/40 bg-warn-bg text-warn" : "border-ok/40 bg-ok-bg text-ok")}>{p.ok === false ? "✗" : p.ok === "warn" ? "!" : "✓"} {p.label}</span>)}</div> : null}</div>
     <div className="flex flex-wrap items-start gap-3"><div className="flex flex-wrap gap-2">{buttons}</div>{options ? <div className="min-w-[260px] flex-1">{options}</div> : null}</div>
+    {stats ? <div className="mt-3">{stats}</div> : null}
     {missing.length ? <Callout kind="warn" className="mt-3"><b>Before you run: </b>{missing.map((p) => p.hint || p.label).join(" · ")}</Callout> : null}
     {notes ? <div className="mt-3 flex flex-col gap-2">{notes}</div> : null}
     {cmd}

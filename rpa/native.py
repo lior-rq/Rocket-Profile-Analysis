@@ -106,7 +106,8 @@ class HostProcess:
     def start(self) -> None:
         self._out = queue.Queue()
         self._err = []
-        self._proc = subprocess.Popen(self.cmd, cwd=str(self.cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+        # CREATE_NO_WINDOW: no console per host under the windowed service exe
+        self._proc = subprocess.Popen(self.cmd, cwd=str(self.cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         threading.Thread(target=self._pump, args=(self._proc.stdout, self._out), daemon=True).start()
         threading.Thread(target=self._pump_err, args=(self._proc.stderr,), daemon=True).start()
 

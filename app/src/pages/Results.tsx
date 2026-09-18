@@ -36,7 +36,7 @@ function historyQuery(r: any, s: any, d: any) {
     queryFn: async () => {
       const dz = await api(`/api/design?booster=${encodeURIComponent(r.booster)}${r.sustainer ? "&sustainer=" + encodeURIComponent(r.sustainer) : ""}${r.profile ? "&profile=" + encodeURIComponent(r.profile) : ""}`);
       if (dz.history) return { dz, hist: (await api("/api/history?path=" + encodeURIComponent(dz.history.path))) as HistoryFrame, kind: "verified" as string | null };
-      if (r.sustainer && isNum(r.sep_delay_s) && isNum(r.ign_delay_s)) { try { return { dz, hist: (await api(`/api/flight?booster=${encodeURIComponent(r.booster)}&sustainer=${encodeURIComponent(r.sustainer)}&profile=${encodeURIComponent(r.profile || "")}&sep=${r.sep_delay_s}&ign=${r.ign_delay_s}`)) as HistoryFrame, kind: "estimated" }; } catch { /* no estimate */ } }
+      if (s.mass.table && r.sustainer && isNum(r.sep_delay_s) && isNum(r.ign_delay_s)) { try { return { dz, hist: (await api(`/api/flight?booster=${encodeURIComponent(r.booster)}&sustainer=${encodeURIComponent(r.sustainer)}&profile=${encodeURIComponent(r.profile || "")}&sep=${r.sep_delay_s}&ign=${r.ign_delay_s}`)) as HistoryFrame, kind: "estimated" }; } catch { /* no estimate */ } }
       return { dz, hist: null as HistoryFrame | null, kind: null as string | null };
     },
     staleTime: Infinity,

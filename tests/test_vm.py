@@ -4,9 +4,14 @@ protocol with nonces, and the start/stop orchestration."""
 import json
 import os
 import stat
+import sys
 import time
 
+import pytest
+
 from rpa.gui.vm import VMControl
+
+pytestmark = pytest.mark.skipif(sys.platform.startswith("win"), reason="fake utmctl is a shell script; UTM is Mac-only")
 
 FAKE = r'''#!/bin/sh
 # fake utmctl: status | start | file push/pull | exec (answers vm_task.ps1 calls)

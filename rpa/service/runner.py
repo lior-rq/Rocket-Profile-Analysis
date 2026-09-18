@@ -177,7 +177,7 @@ class Runner:
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
             p = self.log_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{stage}.log"
-            return str(p.relative_to(self.root)) if self.root in p.parents else str(p), open(p, "w", encoding="utf-8")
+            return p.relative_to(self.root).as_posix() if self.root in p.parents else str(p), open(p, "w", encoding="utf-8")
         except OSError:
             return None, None
 

@@ -65,7 +65,7 @@ def _rel(p: Path, root: Path) -> str:
     symlinked input/ still maps to 'input/...'."""
     for a, b in ((Path(p), Path(root)), (Path(p).resolve(), Path(root).resolve())):
         try:
-            return str(a.relative_to(b))
+            return a.relative_to(b).as_posix()
         except ValueError:
             continue
     return str(p)
@@ -364,7 +364,7 @@ class StateCollector:
             "extra": extra,
             "n_have": n_have,
             "n_plan": len(plan_rows),
-            "dir": str(aero_dir.relative_to(root)) if root in aero_dir.parents else str(aero_dir),
+            "dir": aero_dir.relative_to(root).as_posix() if root in aero_dir.parents else str(aero_dir),
             "stale": bool(aero_mtime and _mtime(cdx1) and aero_mtime < _mtime(cdx1)),
             "settings": cfg["aero_tables"],
         }
@@ -399,7 +399,7 @@ class StateCollector:
             "cases": cases,
             "n": len(cases),
             "calibration": {**cal, "info": cal_info},
-            "dir": str(ref_dir.relative_to(root)) if root in ref_dir.parents else str(ref_dir),
+            "dir": ref_dir.relative_to(root).as_posix() if root in ref_dir.parents else str(ref_dir),
             "stale": bool(ref_mtime and (ref_mtime < (_mtime(cdx1) or 0))),
         }
 
@@ -738,7 +738,7 @@ class StateCollector:
                 state, detail = "online", "RASAero engine (native, no VM needed)"
             elif not engine["ok"] and cfg["backend"] == "rasaero_native":
                 state, detail = "offline", "RASAero native engine: " + engine["detail"]
-        return {"state": state, "detail": detail, "last_seen": last_seen, "version": version, "heartbeat": hb, "alive": alive, "vm": vm_info, "transport": transport, "current_job": current_job, "console_tail": tail[-n_tail:], "jobs": jobs[:n_jobs], "n_jobs": len(jobs), "n_queued": len(queued), "n_active": len(active), "n_orphan": len(orphans), "jobs_dir": str(jobs_dir.relative_to(root)) if root in jobs_dir.parents else str(jobs_dir), "mode": cfg["worker"]["mode"], "engine": engine}
+        return {"state": state, "detail": detail, "last_seen": last_seen, "version": version, "heartbeat": hb, "alive": alive, "vm": vm_info, "transport": transport, "current_job": current_job, "console_tail": tail[-n_tail:], "jobs": jobs[:n_jobs], "n_jobs": len(jobs), "n_queued": len(queued), "n_active": len(active), "n_orphan": len(orphans), "jobs_dir": jobs_dir.relative_to(root).as_posix() if root in jobs_dir.parents else str(jobs_dir), "mode": cfg["worker"]["mode"], "engine": engine}
 
     def job_info(self, d: Path, brief: bool = False) -> dict:
         spec, done = {}, None
@@ -784,5 +784,5 @@ class StateCollector:
             info["files"] = [file_info(p, self.root) for p in sorted(d.iterdir())]
             wl = d / "worker.log"
             info["worker_log"] = wl.read_text(errors="replace").split("\n")[-400:] if wl.exists() else []
-            info["images"] = [str(p.relative_to(self.root)) for p in sorted(d.glob("*.png"))]
+            info["images"] = [p.relative_to(self.root).as_posix() for p in sorted(d.glob("*.png"))]
         return info

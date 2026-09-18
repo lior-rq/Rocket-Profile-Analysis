@@ -98,7 +98,7 @@ def snapshot(cfg, stage: str) -> dict:
 
 def _rel(p: Path, root: Path) -> str:
     try:
-        return str(Path(p).resolve().relative_to(Path(root).resolve()))
+        return Path(p).resolve().relative_to(Path(root).resolve()).as_posix()
     except ValueError:
         return str(p)
 

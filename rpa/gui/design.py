@@ -35,7 +35,7 @@ def motor_payload(m: Motor, root: Path) -> dict:
     if idx and idx[-1] != n - 1:
         idx.append(n - 1)
     try:
-        rel = str(m.path.resolve().relative_to(root.resolve()))
+        rel = m.path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         rel = str(m.path)
     cls = _CLASS_RE.match(m.designation)
@@ -235,7 +235,7 @@ class DesignAssets:
             st = p.stat()
         except OSError:
             return None
-        return {"path": str(p.relative_to(self.root)), "mtime": st.st_mtime}
+        return {"path": p.relative_to(self.root).as_posix(), "mtime": st.st_mtime}
 
     def eng_download(self, kind: str, label: str) -> tuple[str, bytes]:
         m = self.motor(kind, label)

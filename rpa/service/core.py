@@ -285,7 +285,7 @@ class Service:
         if not d.is_dir():
             raise FileNotFoundError(name)
         if action == "reveal":
-            self.reveal(str(d.relative_to(self.root)) if self.root in d.parents else str(d))
+            self.reveal(d.relative_to(self.root).as_posix() if self.root in d.parents else str(d))
             return {"ok": True}
         info = self.state.job_info(d, brief=True)
         if action == "discard":
@@ -328,7 +328,7 @@ class Service:
         sr = out / "search_rows.csv"
         return {
             "histories": {"files": hist[0], "bytes": hist[1], "path": "output/histories"},
-            "jobs": {"files": jobs[0], "bytes": jobs[1], "folders": sum(1 for e in os.scandir(jobs_dir) if e.is_dir()) if jobs_dir.exists() else 0, "path": str(jobs_dir.relative_to(self.root)) if self.root in jobs_dir.parents else str(jobs_dir)},
+            "jobs": {"files": jobs[0], "bytes": jobs[1], "folders": sum(1 for e in os.scandir(jobs_dir) if e.is_dir()) if jobs_dir.exists() else 0, "path": jobs_dir.relative_to(self.root).as_posix() if self.root in jobs_dir.parents else str(jobs_dir)},
             "search_rows": {"files": int(sr.exists()), "bytes": sr.stat().st_size if sr.exists() else 0, "path": "output/search_rows.csv"},
         }
 

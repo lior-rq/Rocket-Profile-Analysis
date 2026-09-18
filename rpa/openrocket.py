@@ -7,6 +7,7 @@ a preview simulation backend so the pipeline runs without the RASAero VM.
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,11 @@ class OpenRocket:
 
         if not jpype.isJVMStarted():
             jvm = str(self.jvm) if self.jvm else jpype.getDefaultJVMPath()
+            if os.name == "nt" and self.jvm:
+                # jvm.dll's dependencies live in <jre>/bin; the loader MUST see it
+                bin_dir = self.jvm.parent.parent
+                self._dll_dir = os.add_dll_directory(str(bin_dir))
+                os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
             jpype.startJVM(jvm, "-Djava.awt.headless=true", f"-Djava.class.path={self.jar}", convertStrings=True)
         self.core = jpype.JPackage("info").openrocket.core
         self._quiet_logging()  # before initialize(): its loader threads log otherwise

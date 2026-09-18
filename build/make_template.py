@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assemble build/template/ (the first project a fresh install gets) from the
 repo's config.yaml and input/: motor files, the .ork and .CDX1; with --full
-also the aero tables and reference flights (50 MB, regenerable in the app).
+also the reference flights (regenerable in the app).
 Paths in the copied config.yaml stay relative, so the template works
 wherever it is copied. Without a config.yaml (CI, a fresh checkout) the
 template is config.example.yaml with an empty input/: the user picks files."""
@@ -59,10 +59,9 @@ def main() -> None:
             rel = src.relative_to(ROOT) if ROOT in src.parents else Path("input") / src.name
             n += copy_tree(src, DST / rel) if src.is_dir() else (shutil.copy2(src, (DST / rel).parent.mkdir(parents=True, exist_ok=True) or DST / rel) and 1)
     if "--full" in sys.argv[1:]:
-        for key in ("aero_dir", "reference_dir"):
-            d = cfg.path(key)
-            if d.exists():
-                n += copy_tree(d, DST / d.relative_to(ROOT))
+        d = cfg.path("reference_dir")
+        if d.exists():
+            n += copy_tree(d, DST / d.relative_to(ROOT))
     (DST / "output").mkdir()
     (DST / "jobs").mkdir()
     size = sum(p.stat().st_size for p in DST.rglob("*") if p.is_file())

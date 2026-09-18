@@ -36,14 +36,7 @@ RESULT_FIELDS = ("max_alt_ft", "max_vel_fps", "t_apogee_s", "t_max_vel_s", "t_fl
 
 
 def auto_workers(cfg) -> int:
-    """Every core when the engine is the simulator; one is left for the
-    python backend's process pool when that is the backend."""
-    n = os.cpu_count() or 2
-    try:
-        backend = cfg["backend"]
-    except (KeyError, TypeError):
-        backend = None
-    return max(1, n - 1) if backend == "python" else n
+    return os.cpu_count() or 2
 
 
 class HostError(RuntimeError):
@@ -392,7 +385,7 @@ class NativeRASAeroBackend(SimBackend):
 
     def aero_table(self, config: str, altitude_ft: float, nozzle_in: float | None, dst: Path, mach_max: float = 25.0, site: dict | None = None) -> Path:
         """One Aero Plots table (CD etc. vs Mach at three angles of attack) in
-        RASAero's export layout, so rpa.aero reads it unchanged."""
+        RASAero's export layout (the app's engine self-test)."""
         from .pipeline import check_cancel
 
         check_cancel()

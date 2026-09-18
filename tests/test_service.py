@@ -14,7 +14,7 @@ def project(tmp_path, motor_dirs, cdx1_file):
     (tmp_path / "input").mkdir(exist_ok=True)
     cfg = {
         "paths": {"ork": None, "cdx1": str(cdx1_file), "boosters": [str(p) for p in boosters], "sustainers": [str(p) for p in sustainers], "openrocket_jar": "auto", "jvm": "auto"},
-        "backend": "python",
+        "backend": "rasaero_native",
         "rasaero": {"engine": "vm"},
         "native": {"warm_start": False},
         "worker": {"mode": "manual"},
@@ -40,7 +40,7 @@ def test_ping_state_config(client):
     st = c.get("/api/state").json()
     assert {"inputs", "optimize", "results", "worker", "runner", "engine", "disk"} <= set(st)
     assert st["inputs"]["boosters"]["n"] == 3
-    assert c.get("/api/config").json()["parsed"]["backend"] == "python"
+    assert c.get("/api/config").json()["parsed"]["backend"] == "rasaero_native"
     assert c.get("/api/table/designs").json()["missing"] is True
     assert c.get("/api/nope").status_code == 404
     assert c.get("/results").status_code == 200  # SPA fallback serves the page

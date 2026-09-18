@@ -69,7 +69,6 @@ class Service:
         self.on_quit = None
         self._sig = None
         self._snapshot = None  # (key, dict)
-        self._sim_backend = None  # (config.yaml mtime, PythonBackend) - see simulate()
         self._samples = None  # (mtime_ns, parsed designs_samples.json)
         self.vm = None
         self.warmup = {"engine": None, "openrocket": None, "started": time.time(), "done": False}
@@ -365,7 +364,7 @@ class Service:
     def resolve(self, rel: str) -> Path:
         p = (self.root / unquote(rel)).resolve()
         cfg = self.state.config()
-        roots = [r.resolve() for r in [*self.allowed_roots, cfg.path("aero_dir"), cfg.path("reference_dir")]]  # input/ may be a symlink
+        roots = [r.resolve() for r in [*self.allowed_roots, cfg.path("reference_dir")]]  # input/ may be a symlink
         if not any(p == r or r in p.parents for r in roots):
             raise PermissionError(rel)
         return p
@@ -404,8 +403,8 @@ class Service:
         return {"path": rel, **history_frame_payload(df, max_points)}
 
     def simulate(self, booster: str, sustainer: str, profile: str, sep: float, ign: float, max_points: int = 1500) -> dict:
-        """On-demand flight for a design that has not gone through verify yet:
-        the configured backend (native engine, or the python integrator)."""
+        """On-demand flight for a design that has not gone through verify yet,
+        on the native engine."""
         from ..pipeline import Pipeline
         from ..search import make_row
 
@@ -419,34 +418,8 @@ class Service:
         if mass is None:
             raise ValueError(f"no mass row for {booster} + {sustainer} (run the mass stage first)")
         row = make_row(booster, profile, sep, ign, pl.ms, mass, pl.cfg)
-        if cfg["backend"] == "rasaero_native":
-            be = pl.native_backend(log=lambda *_: None)
-        else:
-            be = self._python_backend(pl, ms)
-        df = be.history(row, "on-demand")
+        df = pl.native_backend(log=lambda *_: None).history(row, "on-demand")
         return {"path": None, **history_frame_payload(df, max_points)}
-
-    def _python_backend(self, pl, ms):
-        from ..backends import PythonBackend
-
-        try:
-            cfg_mtime = (self.root / "config.yaml").stat().st_mtime_ns
-        except OSError:
-            cfg_mtime = None
-        key = (cfg_mtime, id(ms))
-        cached = self._sim_backend
-        if cached and cached[0] == key:
-            return cached[1]
-        be = PythonBackend(pl.cfg, pl.ms, pl.site, pl.ref_diameter_in, log=lambda *_: None, workers=1)
-        self._sim_backend = (key, be)
-        return be
-
-    def aero_table(self, rel: str) -> dict:
-        p = self.resolve(rel)
-        from ..aero import AeroTable
-
-        t = AeroTable.read(p)
-        return {"path": rel, "mach": t.mach.tolist(), "cd_off": t.cd_off.tolist(), "cd_on": t.cd_on.tolist()}
 
     def motors(self) -> dict:
         from ..eng import load_motors

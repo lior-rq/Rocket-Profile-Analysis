@@ -2,7 +2,6 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 import { Shell } from "@/components/Shell";
 import { OverviewPage } from "@/pages/Overview";
 import { InputsPage } from "@/pages/Inputs";
-import { AeroPage } from "@/pages/Aero";
 import { ReferencePage } from "@/pages/Reference";
 import { ValidatePage } from "@/pages/Validate";
 import { OptimizePage } from "@/pages/Optimize";
@@ -18,7 +17,6 @@ const anySearch = (s: Record<string, unknown>) => s as Record<string, string | u
 const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: "/", component: OverviewPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/inputs", component: InputsPage, validateSearch: anySearch }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/aero", component: AeroPage, validateSearch: anySearch }),
   createRoute({ getParentRoute: () => rootRoute, path: "/reference", component: ReferencePage, validateSearch: anySearch }),
   createRoute({ getParentRoute: () => rootRoute, path: "/validate", component: ValidatePage, validateSearch: anySearch }),
   createRoute({ getParentRoute: () => rootRoute, path: "/optimize", component: OptimizePage }),

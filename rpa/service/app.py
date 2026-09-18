@@ -127,10 +127,6 @@ def create_app(svc: Service) -> FastAPI:
         q = request.query_params
         return J(await anyio.to_thread.run_sync(svc.history, q["path"], int(q.get("max", "1500"))))
 
-    @app.get("/api/aero")
-    async def aero(request: Request):
-        return J(await anyio.to_thread.run_sync(svc.aero_table, request.query_params["path"]))
-
     @app.get("/api/motors")
     async def motors():
         return J(await anyio.to_thread.run_sync(svc.motors))

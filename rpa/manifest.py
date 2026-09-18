@@ -12,7 +12,7 @@ from pathlib import Path
 
 _MOTORS = ["paths.boosters", "paths.sustainers", "paths.exclude_boosters", "paths.exclude_sustainers", "ric"]
 _MASS = _MOTORS + ["paths.ork", "mass_model"]
-_CHAR = _MASS + ["paths.cdx1", "sustainer_selection", "characterization", "launch_site", "python_sim", "rasaero.sustainer_nozzle_in", "rasaero.booster_nozzle_in", "surface_finish", "profiles.subsonic_max_mach", "profiles.supersonic_min_mach", "profiles.mach_margin", "backend", "paths.aero_dir"]
+_CHAR = _MASS + ["paths.cdx1", "sustainer_selection", "characterization", "launch_site", "native.dt_s", "rasaero.sustainer_nozzle_in", "rasaero.booster_nozzle_in", "surface_finish", "profiles.subsonic_max_mach", "profiles.supersonic_min_mach", "profiles.mach_margin", "backend"]
 _SEARCH = _CHAR + ["target", "profiles"]
 STAGE_KEYS: dict[str, list[str]] = {
     "check": _CHAR,
@@ -61,10 +61,6 @@ def input_files(cfg, stage: str) -> list[Path]:
                 files.append(src)
     if stage != "motors":
         files += [p for k in ("ork", "cdx1") if (p := cfg.file(k))]
-    if stage not in ("motors", "mass"):
-        aero = cfg.path("aero_dir")
-        if aero.exists():
-            files += sorted(aero.glob("*.csv"))
     return files
 
 
@@ -72,8 +68,8 @@ _DIGESTS: dict[str, tuple[tuple, str]] = {}  # path -> ((mtime_ns, size), md5)
 
 
 def digest(p: Path) -> str | None:
-    """Content hash (cached by mtime+size): a rewrite of identical content,
-    e.g. validate re-saving the density calibration, is not a change."""
+    """Content hash (cached by mtime+size): a rewrite of identical content
+    is not a change."""
     try:
         st = p.stat()
     except OSError:

@@ -8,7 +8,6 @@ paths:
   sustainers: []                  # same, for sustainer candidates
   output_dir: "output"
   jobs_dir: "jobs"                # shared with the VM (Z:\jobs)
-  aero_dir: "input/aero"          # written by `rpa aero`: <stack|sustainer>_alt<ft>[_noz<in>].csv
   reference_dir: "input/rasaero_reference"   # written by `rpa reference`, read by `rpa validate`
   openrocket_jar: "/Applications/OpenRocket.app/Contents/Resources/app/jar/OpenRocket-24.12.jar"
   jvm: "/Applications/OpenRocket.app/Contents/Resources/jre.bundle/Contents/Home/lib/server/libjvm.dylib"
@@ -58,7 +57,7 @@ rasaero:
   sustainer_nozzle_in: null       # null = parse "exit x.xxx in" from the .eng comment header
   booster_nozzle_in: null
   mach_alt_via_cdx1: false        # opt-in speedup: pre-write <MachAlt> instead of the dialog - verify on the VM first
-  engine: auto                    # where RASAero runs for aero/reference/confirm: auto (native if built) | native | vm
+  engine: auto                    # where RASAero runs for reference/confirm: auto (native if built) | native | vm
 
 native:                           # RASAero's engine in child processes (native/, rpa/native.py)
   dt_s: 0.01
@@ -80,23 +79,9 @@ mass_model:
     ref_booster_prop_kg: null
     booster_prop_cg_in: null      # axial station (from nose tip) of the booster propellant CG
 
-backend: rasaero_native           # rasaero_native (RASAero's engine, bundled) | python (RASAero tables) | rasaero (VM GUI) | openrocket (preview)
+backend: rasaero_native           # rasaero_native (RASAero's engine, bundled) | rasaero (VM GUI) | openrocket (preview)
 
-python_sim:                       # RASAero's flight loop in Python (rpa/flightsim.py)
-  dt_s: 0.01
-  max_time_s: 400
-  ref_diameter_in: null           # null = largest body diameter found in the CDX1
-  workers: auto                   # CPU processes for the search batches (auto = cores - 1, 1 = serial)
-
-aero_tables:                      # `rpa aero`: Aero Plots exports (once per vehicle revision)
-  altitudes_ft: [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000, 55000, 60000, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000]
-                                  # Mach-Alt altitude per table; CD follows the Reynolds number, 5000 ft steps keep apogee within ~0.01 %
-  stack_nozzles_in: auto          # auto = largest booster nozzle (power-on CD scales exactly to any nozzle)
-  sustainer_nozzles_in: auto      # auto = largest sustainer nozzle
-  plot_range: "Mach 5"
-  batch_altitudes: true          # opt-in speedup: all altitudes of one nozzle in one worker job - verify on the VM first
-
-validation:                       # `rpa validate` pass criteria vs RASAero reference exports
+validation:                       # `rpa validate`: the native engine vs VM exports of the same flights
   apogee_tol_pct: 0.1
   mach_tol: 0.001
   cd_tol_pct: 0.5

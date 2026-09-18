@@ -5,7 +5,7 @@ staged motor set, config.yaml's launch site and surface finish. The VM side
 is RASAero II 1.0.2.0 driven by the worker (32-bit .NET Framework on Windows
 11 ARM64); the native side is `RASAeroEngine.dll` on .NET 8 arm64 macOS.
 
-## Flights: 10 reference exports (`rpa validate --engine native`)
+## Flights: 10 reference exports (`rpa validate`)
 
 | Case | Apogee VM (ft) | Apogee native (ft) | Diff | Max Mach diff | Max alt diff (ft) | Max vel diff (fps) | Weight diff (lb) |
 |------|---------------:|-------------------:|-----:|--------------:|------------------:|-------------------:|-----------------:|
@@ -24,13 +24,13 @@ Time to apogee agrees to the 0.01 s step in every case; CD along the flight
 agrees to 2e-5 % (median); burnout, separation and ignition land on the same
 samples. The residual (0.2 ft over a 70,000 ft flight) is the x87-vs-IEEE
 float rounding expected from the plan, three orders of magnitude below the
-python backend's 0.1 % criterion.
+`validation.apogee_tol_pct` criterion (0.1 %).
 
 RASAero's own two-stage example (`vendor/rasaero/examples/AeroPac104K...`)
 carries results saved by the GUI: 113786.4 ft / 3125.964 fps / 98.33942 s.
 Native: 113786.0 ft / 3125.958 fps / 98.33942 s.
 
-## Aero tables: 10 tables (`aero_plan`), Mach 0.01..25, alpha 0/2/4
+## Aero tables: 10 tables (stack + sustainer, 5 altitudes), Mach 0.01..25, alpha 0/2/4
 
 Worst relative difference over all rows at alpha 0:
 
@@ -51,7 +51,7 @@ That is the rounding of the VM's exported decimals.
 |------|-----------|--------|
 | One aero table (7500 rows) | minutes (GUI, screenshots, waits) | 0.11 s |
 | 10 reference flights with histories | ~10 jobs, tens of minutes | 4.4 s total |
-| Search batch, 200 flights | n/a (python backend) | 27 s serial, 4.3 s with 13 hosts (22 ms/flight) |
+| Search batch, 200 flights | hours (one job per batch) | 27 s serial, 4.3 s with 13 hosts (22 ms/flight) |
 
 ## Open points
 

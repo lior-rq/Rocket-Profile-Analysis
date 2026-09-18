@@ -18,7 +18,7 @@ from ..config import load_config
 from ..eng import expand_motor_sources, parse_eng
 from ..motors import load_motor_set
 
-STEPS = ["inputs", "aero", "reference", "validate", "optimize", "results", "confirm"]
+STEPS = ["inputs", "reference", "validate", "optimize", "results", "confirm"]
 RUN_SUBSTAGES = [
     ("motors", ["boosters.csv", "sustainers.csv", "selected_sustainer.json", "motors/all_motors.eng"]),
     ("mass", ["mass_table.csv"]),
@@ -228,7 +228,7 @@ class StateCollector:
             site_cdx1 = C.launch_site(tree)
             site = dict(site_cdx1)
             site.update({k: v for k, v in cfg["launch_site"].items() if v is not None})
-            ref_dia = float(cfg["python_sim"].get("ref_diameter_in") or C.reference_diameter_in(tree))
+            ref_dia = C.reference_diameter_in(tree)
         except Exception as e:
             cdx_err = f"{type(e).__name__}: {e}"
         motors = None
@@ -322,53 +322,6 @@ class StateCollector:
             except Exception as e:
                 mass["table"] = {"error": str(e)}
 
-        # aero tables ---------------------------------------------------------
-        aero_dir = cfg.path("aero_dir")
-        plan_rows, plan_err = [], None
-        if ms is not None:
-            try:
-                from ..pipeline import Pipeline
-
-                for cfg_name, noz, alt, dst in Pipeline(cfg).aero_plan():
-                    fi = file_info(dst, root)
-                    plan_rows.append({"config": cfg_name, "nozzle_in": noz, "altitude_ft": alt, **fi})
-            except Exception as e:
-                plan_err = f"{type(e).__name__}: {e}"
-        planned = {r["name"] for r in plan_rows}
-        extra = [file_info(p, root) for p in sorted(aero_dir.glob("*.csv")) if p.name not in planned] if aero_dir.exists() else []
-        n_have = sum(r["exists"] for r in plan_rows)
-        aero_mtime = _newest([aero_dir / r["name"] for r in plan_rows if r["exists"]] + [aero_dir / e["name"] for e in extra])
-        # tables can cover the motor set even if planned nozzle points differ
-        coverage, covered = [], False
-        if ms is not None and (n_have or extra):
-            try:
-                from ..aero import STACK, SUSTAINER, AeroSet
-
-                aset = AeroSet.load(aero_dir)
-                # the same check as Pipeline.check: min / max nozzle of each set
-                nozs = [b.nozzle_exit_in for b in ms.boosters if b.nozzle_exit_in]
-                for noz in (min(nozs), max(nozs)) if nozs else (None,):
-                    coverage += aset.coverage_problems(STACK, noz, 2.5, 50000.0)
-                snozs = [m.nozzle_exit_in for m in ms.sustainer_candidates if m.nozzle_exit_in]
-                for noz in (min(snozs), max(snozs)) if snozs else (None,):
-                    coverage += aset.coverage_problems(SUSTAINER, noz, 3.0, 50000.0)
-                covered = not coverage
-            except Exception as e:
-                coverage = [f"{type(e).__name__}: {e}"]
-        aero = {
-            "status": ("ok" if plan_rows and (n_have == len(plan_rows) or covered) else "partial" if (n_have or extra) else "todo") if not plan_err else "error",
-            "covered": covered,
-            "coverage_problems": coverage,
-            "error": plan_err,
-            "plan": plan_rows,
-            "extra": extra,
-            "n_have": n_have,
-            "n_plan": len(plan_rows),
-            "dir": aero_dir.relative_to(root).as_posix() if root in aero_dir.parents else str(aero_dir),
-            "stale": bool(aero_mtime and _mtime(cdx1) and aero_mtime < _mtime(cdx1)),
-            "settings": cfg["aero_tables"],
-        }
-
         # reference flights ---------------------------------------------------
         ref_dir = cfg.path("reference_dir")
         cases = []
@@ -402,13 +355,13 @@ class StateCollector:
             try:
                 vdf = pd.read_csv(vfile)
                 n_pass = int(vdf["pass"].sum())
-                keep = [c for c in ["case", "booster", "sep_delay_s", "ign_delay_s", "apogee_ref_ft", "apogee_ours_ft", "apogee_err_pct", "mach_burnout_ref", "mach_burnout_ours", "mach_burnout_err", "cd_median_err_pct", "cd_p95_err_pct", "mach_max_abs_err", "weight_max_abs_err_lb", "thrust_max_abs_err_lb", "pass", "fail_reasons"] if c in vdf.columns]
+                keep = [c for c in ["case", "booster", "sep_delay_s", "ign_delay_s", "apogee_ref_ft", "apogee_ours_ft", "apogee_err_pct", "mach_burnout_ref", "mach_burnout_ours", "mach_burnout_err", "cd_median_err_pct", "cd_max_abs_err", "altitude_max_abs_err_ft", "velocity_max_abs_err_fps", "mach_max_abs_err", "weight_max_abs_err_lb", "thrust_max_abs_err_lb", "pass", "fail_reasons"] if c in vdf.columns]
                 vrows = records(vdf[keep])
                 for r in vrows:
                     r["png"] = f"output/validation/{r['case']}.png" if (out / "validation" / f"{r['case']}.png").exists() else None
             except Exception as e:
                 vrows = [{"error": str(e)}]
-        v_stale = bool(vinfo["exists"] and ((ref_mtime and vinfo["mtime"] < ref_mtime) or (aero_mtime and vinfo["mtime"] < aero_mtime)))
+        v_stale = bool(vinfo["exists"] and ref_mtime and vinfo["mtime"] < ref_mtime)
         validate = {
             "status": ("stale" if v_stale else "ok" if vrows and n_pass == len(vrows) else "warn" if vrows else "todo") if vinfo["exists"] else "todo",
             "file": vinfo,
@@ -474,7 +427,6 @@ class StateCollector:
             "config": dict(cfg),
             "inputs": inputs,
             "mass": mass,
-            "aero": aero,
             "reference": reference,
             "validate": validate,
             "optimize": optimize,
@@ -627,8 +579,7 @@ class StateCollector:
                         scan(src, {"eng"})
                     else:
                         add(src)
-            for k in ("aero_dir", "reference_dir"):
-                scan(cfg.path(k), {"csv", "json"})
+            scan(cfg.path("reference_dir"), {"csv", "json"})
             scan(cfg.output_dir, {"csv", "json", "md", "png"})
             jobs = cfg.path("jobs_dir")
             if jobs.exists():

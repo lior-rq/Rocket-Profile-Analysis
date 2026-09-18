@@ -3,17 +3,16 @@ export type RunRecord = { stage: string; args: string[]; label?: string | null; 
 export type StepStatus = "ok" | "partial" | "todo" | "stale" | "warn" | "error" | "unchecked" | "running";
 export type AppState = {
   now: number; root: string; config: any;
-  inputs: any; mass: any; aero: any; reference: any; validate: any; optimize: any; results: any; confirm: any; worker: any;
+  inputs: any; mass: any; reference: any; validate: any; optimize: any; results: any; confirm: any; worker: any;
   runner: import("./api").RunnerStatus; history: RunRecord[]; plots: FileInfo[]; disk: any; engine: any;
 };
 export const STEPS = [
-  { id: "inputs", n: 1, title: "Inputs & settings", sub: "Vehicle, motors, mass, target", short: "Inputs", path: "/inputs" },
-  { id: "aero", n: 2, title: "Aero tables", sub: "RASAero drag curves", short: "Aero tables", path: "/aero" },
-  { id: "reference", n: 3, title: "Reference flights", sub: "RASAero runs", short: "Reference", path: "/reference" },
-  { id: "validate", n: 4, title: "Validate simulator", sub: "Python vs RASAero", short: "Validate", path: "/validate" },
-  { id: "optimize", n: 5, title: "Optimize", sub: "Search staging delays", short: "Optimize", path: "/optimize" },
-  { id: "results", n: 6, title: "Results", sub: "Designs, plots, report", short: "Results", path: "/results" },
-  { id: "confirm", n: 7, title: "Confirm in RASAero", sub: "Final check", short: "Confirm", path: "/confirm" },
+  { id: "inputs", n: 1, title: "Inputs & settings", sub: "Vehicle, motors, mass, target", short: "Inputs", path: "/inputs", optional: false },
+  { id: "reference", n: 2, title: "Reference flights", sub: "RASAero GUI exports (optional)", short: "Reference", path: "/reference", optional: true },
+  { id: "validate", n: 3, title: "Validate engine", sub: "Native vs GUI exports (optional)", short: "Validate", path: "/validate", optional: true },
+  { id: "optimize", n: 4, title: "Optimize", sub: "Search staging delays", short: "Optimize", path: "/optimize", optional: false },
+  { id: "results", n: 5, title: "Results", sub: "Designs, plots, report", short: "Results", path: "/results", optional: false },
+  { id: "confirm", n: 6, title: "Confirm in RASAero", sub: "Final check", short: "Confirm", path: "/confirm", optional: false },
 ] as const;
 export type StepId = (typeof STEPS)[number]["id"];
 export const STATUS_TEXT: Record<string, string> = { ok: "done", partial: "partial", todo: "not started", stale: "out of date", warn: "needs attention", error: "problem", unchecked: "not checked", running: "running" };
@@ -26,7 +25,7 @@ export function stepStatus(s: AppState | null | undefined, id: string): StepStat
   const r = s.runner;
   if (r.running) {
     const st = r.stage;
-    if ((id === "inputs" && (st === "check" || st === "mass")) || (id === "aero" && st === "aero") || (id === "reference" && st === "reference") || (id === "validate" && st === "validate") || (id === "optimize" && RUN_STAGES.includes(st || "")) || (id === "confirm" && st === "confirm")) return "running";
+    if ((id === "inputs" && (st === "check" || st === "mass")) || (id === "reference" && st === "reference") || (id === "validate" && st === "validate") || (id === "optimize" && RUN_STAGES.includes(st || "")) || (id === "confirm" && st === "confirm")) return "running";
   }
   return ((s as any)[id] && (s as any)[id].status) || "todo";
 }

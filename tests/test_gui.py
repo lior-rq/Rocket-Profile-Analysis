@@ -9,18 +9,20 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from rpa.config import load_config
 from rpa.gui.state import StateCollector
 from rpa.gui.yamledit import set_many, set_scalar
+from rpa.native import engine_status
 from rpa.service import stages
 from rpa.service.app import create_app
 from rpa.service.core import Service
 from rpa.service.runner import CANCELLED_CODE, Runner
+
+ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG = """# top comment
 paths:
@@ -33,7 +35,7 @@ target:
 
 launch_site:
   altitude_ft: null       # null = CDX1
-backend: python   # python | rasaero
+backend: rasaero_native   # rasaero_native | rasaero
 """
 
 
@@ -46,7 +48,7 @@ def test_yamledit_preserves_comments_and_round_trips():
     assert d["paths"]["cdx1"] == "input/x.CDX1"
     assert d["launch_site"]["altitude_ft"] == 2782
     assert d["backend"] == "rasaero"
-    assert "# top comment" in out and "# the model" in out and "# keep" in out and "# null = CDX1" in out and "# python | rasaero" in out
+    assert "# top comment" in out and "# the model" in out and "# keep" in out and "# null = CDX1" in out and "# rasaero_native | rasaero" in out
     # a new top-level section is appended
     out2 = set_scalar(out, ["worker", "mode"], "manual")
     assert yaml.safe_load(out2)["worker"]["mode"] == "manual"
@@ -119,7 +121,7 @@ def test_state_collector_on_empty_project(tmp_path):
     sc = StateCollector(tmp_path)
     s = sc.collect(Runner(tmp_path))
     assert s["inputs"]["status"] == "error" and s["inputs"]["problems"]
-    for k in ("aero", "reference", "validate", "optimize", "results", "confirm"):
+    for k in ("reference", "validate", "optimize", "results", "confirm"):
         assert s[k]["status"] == "todo"
     from rpa.native import engine_status
 
@@ -296,20 +298,10 @@ def test_design_http_routes(design_project):
     svc.close()
 
 
-def _write_aero_tables(d: Path):
-    """Minimal stack/sustainer CD tables covering the fixture's flight."""
-    d.mkdir(parents=True, exist_ok=True)
-    mach = np.arange(0, 6.01, 0.05)
-    cd = 0.4 + 0.3 * np.exp(-(((mach - 1.1) / 0.3) ** 2))
-    for cfg, noz in (("stack", 3.0), ("sustainer", 2.45)):
-        for alt in (0.0, 60000.0):
-            pd.DataFrame({"Mach Number": mach, "CD Power-Off": cd, "CD Power-On": cd - 0.05}).to_csv(d / f"{cfg}_alt{alt:g}_noz{noz:g}.csv", index=False)
-
-
+@pytest.mark.skipif(not engine_status(load_config(ROOT / "config.yaml", root=ROOT))["ok"], reason="RASAero native engine not built")
 def test_flight_simulation_endpoint(design_project):
-    """/api/flight: on-demand python-backend flight for a design that has
+    """/api/flight: on-demand native-engine flight for a design that has
     not gone through the verify stage yet (no output/histories/final-*.csv)."""
-    _write_aero_tables(design_project / "input" / "aero")
     bfile = design_project / "input" / "motors" / "boosters.eng"
     sfile = design_project / "input" / "motors" / "sus" / "01-S1.eng"
     (design_project / "config.yaml").write_text(f"""paths:
@@ -322,7 +314,9 @@ target:
   tolerance_ft: 100
 launch_site:
   altitude_ft: null
-backend: python
+backend: rasaero_native
+native:
+  warm_start: false
 mass_model:
   method: manual
   manual:

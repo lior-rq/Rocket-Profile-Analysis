@@ -18,7 +18,6 @@ DEFAULTS: dict[str, Any] = {
         "exclude_sustainers": [],
         "output_dir": "output",
         "jobs_dir": "jobs",
-        "aero_dir": "input/aero",
         "reference_dir": "input/rasaero_reference",
         "rasaero_host": "auto",  # rasaero-host (native/RasaeroHost build); auto = the repo's Release build
         "rasaero_engine": "vendor/rasaero/RASAeroEngine.dll",  # patched RASAero II engine (tools/rasaero_fetch.py)
@@ -50,7 +49,7 @@ DEFAULTS: dict[str, Any] = {
     # which sustainer candidates the optimizer flies with every booster:
     #   best  - the max-impulse one only (one sustainer, as before)
     #   span  - `count` candidates spread over the apogee they give a reference
-    #           booster (min, max, evenly spaced between; python backend)
+    #           booster (min, max, evenly spaced between)
     #   list  - exactly `labels`
     "sustainer_selection": {"mode": "best", "count": 5, "labels": []},
     # null -> keep whatever the CDX1 template has
@@ -71,13 +70,13 @@ DEFAULTS: dict[str, Any] = {
         "sustainer_nozzle_in": None,  # null -> from the .eng comment header
         "booster_nozzle_in": None,
         "mach_alt_via_cdx1": False,  # opt-in: pre-write <MachAlt> instead of the dialog - verify on the VM
-        "engine": "auto",  # where RASAero runs for aero tables, references and confirm: auto (native if built) | native | vm
+        "engine": "auto",  # where RASAero runs for references and confirm: auto (native if built) | native | vm
     },
     "native": {  # RASAero's engine in-process (rpa.native): backend rasaero_native / rasaero.engine native
         "dt_s": 0.01,
         "timeout_s": 600.0,
         "rows_per_batch": 200,
-        "workers": "auto",  # host processes for search batches: auto = every core (cores - 1 with backend: python), 1 = serial
+        "workers": "auto",  # host processes for search batches: auto = every core, 1 = serial
         "shared": True,  # keep the host pool alive across stages / runs (one per process)
         "warm_start": True,  # the app starts the hosts and the JVM at launch, in the background
     },
@@ -93,22 +92,8 @@ DEFAULTS: dict[str, Any] = {
             "booster_prop_cg_in": None,
         },
     },
-    "backend": "python",  # python (RASAero tables) | rasaero_native (RASAero's engine, no VM) | rasaero (VM GUI) | openrocket (preview)
-    "python_sim": {  # RASAero's flight loop in Python (rpa.flightsim); atmosphere and site handling are RASAero's own
-        "dt_s": 0.01,
-        "max_time_s": 400.0,
-        "ref_diameter_in": None,  # null -> largest body diameter in the CDX1
-        "workers": "auto",  # CPU processes for search batches: auto = cores - 1, 1 = serial
-    },
-    "aero_tables": {  # what `rpa aero` exports from RASAero's Aero Plots
-        # CD depends on altitude through the Reynolds number; a table every
-        # 5000 ft keeps the python backend within ~0.01 % of RASAero's apogee
-        "altitudes_ft": [float(a) for a in range(0, 100_001, 5000)],
-        "stack_nozzles_in": "auto",  # auto = the largest booster nozzle (power-on CD scales exactly to any other)
-        "sustainer_nozzles_in": "auto",  # auto = the largest sustainer candidate nozzle
-        "plot_range": "Mach 5",
-        "batch_altitudes": False,  # opt-in: all altitudes of one nozzle in one worker job - verify on the VM first
-    },
+    "backend": "rasaero_native",  # rasaero_native (RASAero's engine, no VM) | rasaero (VM GUI) | openrocket (preview)
+    # `rpa validate`: the native engine vs VM exports of the same flights
     "validation": {"apogee_tol_pct": 0.1, "mach_tol": 0.001, "cd_tol_pct": 0.5, "weight_tol_lb": 0.01, "mach_at_burnout_tol": 0.002},
     "worker": {
         "mode": "auto",  # auto (VM worker polls jobs/) | manual (you run RASAero by hand)
@@ -211,6 +196,8 @@ def load_config(path: str | Path | None = None, root: str | Path | None = None, 
     cfg = Config(_merge(_merge(DEFAULTS, data), overrides or {}))
     cfg.root = root
     _normalize_profiles(cfg["profiles"])
+    if cfg["backend"] == "python":  # removed backend (older config.yaml)
+        cfg["backend"] = "rasaero_native"
     return cfg
 
 

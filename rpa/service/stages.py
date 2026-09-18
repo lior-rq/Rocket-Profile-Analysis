@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-STAGES = {"check", "aero", "reference", "validate", "run", "motors", "mass", "characterize", "search", "verify", "report", "confirm", "inspect"}
+STAGES = {"check", "reference", "validate", "run", "motors", "mass", "characterize", "search", "verify", "report", "confirm", "inspect"}
 FLAGS = {"--backend", "--engine", "--target", "--tolerance", "--worker-mode", "--boosters", "--limit", "--include-unsolved", "--decel-subsonic", "--fresh", "--cases", "--top", "--designs"}
 
 

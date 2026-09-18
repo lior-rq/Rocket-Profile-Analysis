@@ -17,11 +17,11 @@ STAGES = ["motors", "mass", "characterize", "search", "verify", "report"]
 
 def build_parser():
     ap = argparse.ArgumentParser(prog="rpa", description="Two-stage flight profile optimizer (OpenRocket + RASAero II)")
-    ap.add_argument("stage", choices=[*STAGES, "run", "check", "aero", "reference", "validate", "confirm", "inspect", "gui", "service"], help="pipeline stage; 'run' = all stages in order; 'check' = validate the input set; 'reference' = export RASAero reference flights (VM); 'validate' = compare the python backend against them; 'inspect' = map RASAero's GUI via the VM worker; 'gui' = open the local web GUI")
+    ap.add_argument("stage", choices=[*STAGES, "run", "check", "reference", "validate", "confirm", "inspect", "gui", "service"], help="pipeline stage; 'run' = all stages in order; 'check' = validate the input set; 'reference' = export RASAero reference flights; 'validate' = fly them on the native engine and compare; 'inspect' = map RASAero's GUI via the VM worker; 'gui' = open the local web GUI")
     ap.add_argument("--config", default=None, help="config.yaml path (default: ./config.yaml)")
     ap.add_argument("--root", default=None, help="repo root (default: cwd)")
-    ap.add_argument("--backend", choices=["python", "rasaero_native", "rasaero", "openrocket"], default=None, help="override backend")
-    ap.add_argument("--engine", choices=["auto", "native", "vm"], default=None, help="where RASAero runs for aero/reference/confirm/validate (rasaero.engine)")
+    ap.add_argument("--backend", choices=["rasaero_native", "rasaero", "openrocket"], default=None, help="override backend")
+    ap.add_argument("--engine", choices=["auto", "native", "vm"], default=None, help="where RASAero runs for reference/confirm (rasaero.engine)")
     ap.add_argument("--target", type=float, default=None, help="target apogee [ft]")
     ap.add_argument("--tolerance", type=float, default=None, help="apogee tolerance [ft]")
     ap.add_argument("--worker-mode", choices=["auto", "manual"], default=None)
@@ -104,9 +104,6 @@ def run(argv=None) -> int:
         problems = pipe.check()
         manifest.write(cfg, "check", problems=len(problems))
         return 1 if problems else 0
-    if args.stage == "aero":
-        pipe.stage_aero(force=args.fresh, clear_stale=not (args.boosters or args.limit))
-        return 0
     if args.stage == "confirm":
         pipe.stage_confirm(top_n=args.top, include_unsolved=args.include_unsolved, designs=[k.strip() for k in args.designs.split(",") if k.strip()] if args.designs else None)
         return 0
@@ -114,7 +111,7 @@ def run(argv=None) -> int:
         pipe.stage_reference(args.cases)
         return 0
     if args.stage == "validate":
-        df = pipe.stage_validate(engine=args.engine)
+        df = pipe.stage_validate()
         return 0 if bool(df["pass"].all()) else 1
     stages = STAGES if args.stage == "run" else [args.stage]
     try:

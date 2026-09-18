@@ -52,7 +52,7 @@ export function ResultsPage() {
   const d = s.results, cfg = s.config;
   const tab = search.tab || "designs";
   const setSearch = (patch: Record<string, unknown>) => nav({ to: "/results", search: { ...search, ...patch } as any });
-  if (!d.n) return <StepPage id="results" summary="Designs, eligibility, characterization, time histories, plots and the written report."><Callout kind="info">No results yet — run the optimizer (step 5).</Callout></StepPage>;
+  if (!d.n) return <StepPage id="results" summary="Designs, eligibility, characterization, time histories, plots and the written report."><Callout kind="info">No results yet — run the optimizer (step 4).</Callout></StepPage>;
   const shortlist: string[] = d.shortlist || [];
   const nElig = d.eligibility ? Object.values(d.eligibility as Record<string, any>).reduce((a: number, v: any) => a + v.eligible, 0) : null;
   const setShortlist = async (body: any) => { try { await api("/api/shortlist", body); await refresh(); } catch (e: any) { toast.error(e.message); } };

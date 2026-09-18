@@ -1,6 +1,6 @@
-"""Simulation backends: the Python integrator on RASAero aero tables (what
-the search runs on), RASAero II itself via the VM worker (table exports and
-final confirmation) and OpenRocket headless (preview)."""
+"""Simulation backends: RASAero II via the VM worker (reference exports,
+final confirmation, fallback search) and OpenRocket headless (preview).
+The default, RASAero's own engine in-process, is rpa.native."""
 
 from __future__ import annotations
 
@@ -225,126 +225,6 @@ class OpenRocketBackend(SimBackend):
         h = self._sim(row)
         h.to_csv(self.history_dir / (safe_name(name) + ".csv"), index=False)
         return h
-
-
-# ---- run_batch pool workers (module level: must pickle by name) ----
-_POOL_BACKEND = None
-
-
-def _pool_init(cfg, motorset, site, ref_diameter_in):
-    global _POOL_BACKEND
-    _POOL_BACKEND = PythonBackend(cfg, motorset, site, ref_diameter_in, log=lambda *_: None, workers=1)
-
-
-def _pool_sim(rows: list[SimRow]) -> list[tuple[float, float, float]]:
-    out = []
-    for r in rows:
-        s, _ = _POOL_BACKEND.sim.run(_POOL_BACKEND.vehicle(r), r.sep_delay_s, r.ign_delay_s, history=False)
-        out.append((s["max_alt_ft"], s["max_vel_fps"], s["t_apogee_s"]))
-    return out
-
-
-class PythonBackend(SimBackend):
-    """rpa.flightsim on RASAero aero tables: tens of milliseconds per flight,
-    no VM. Batches are spread over the CPU cores (python_sim.workers)."""
-
-    name = "python"
-
-    def __init__(self, cfg, motorset, site: dict, ref_diameter_in: float, log=print, workers: int | str | None = None):
-        import os
-
-        from .aero import AeroSet
-        from .flightsim import FlightSim
-
-        self.cfg = cfg
-        self.ms = motorset
-        self.site = site
-        self.log = log
-        ps = cfg["python_sim"]
-        w = ps.get("workers", "auto") if workers is None else workers
-        self.workers = max(1, (os.cpu_count() or 2) - 1) if w in (None, "auto") else max(1, int(w))
-        self._pool = None
-        self.aero = AeroSet.load(cfg.path("aero_dir"))
-        self.sim = FlightSim(self.aero, site, dt=float(ps["dt_s"]), max_time_s=float(ps["max_time_s"]))
-        self.ref_diameter_in = float(ref_diameter_in)
-        self.history_dir = cfg.output_dir / "histories"
-        self.history_dir.mkdir(parents=True, exist_ok=True)
-
-    def vehicle(self, row: SimRow):
-        from .flightsim import Vehicle
-
-        return Vehicle(self.ms.booster(row.booster), self.ms.sustainer_by_label(row.sustainer), row.combined_wt_lb, row.sustainer_wt_lb, self.ref_diameter_in, row.booster_nozzle_in, row.sustainer_nozzle_in)
-
-    def _sim(self, row: SimRow, history: bool = True):
-        from .pipeline import check_cancel
-
-        check_cancel()
-        s, h = self.sim.run(self.vehicle(row), row.sep_delay_s, row.ign_delay_s, history=history)
-        row.max_alt_ft = round(s["max_alt_ft"], 1)
-        row.max_vel_fps = round(s["max_vel_fps"], 1)
-        row.t_apogee_s = round(s["t_apogee_s"], 2)
-        return h
-
-    def _get_pool(self):
-        if self._pool is None:
-            import multiprocessing
-            from concurrent.futures import ProcessPoolExecutor
-
-            self._pool = ProcessPoolExecutor(max_workers=self.workers, mp_context=multiprocessing.get_context("spawn"), initializer=_pool_init, initargs=(self.cfg, self.ms, self.site, self.ref_diameter_in))
-        return self._pool
-
-    def close(self):
-        if self._pool is not None:
-            self._pool.shutdown(wait=False, cancel_futures=True)
-            self._pool = None
-
-    def run_batch(self, rows: list[SimRow], name: str) -> None:
-        n = len(rows)
-        if self.workers > 1 and n >= 4 * self.workers:
-            try:
-                self._run_batch_parallel(rows, name)
-                return
-            except Exception as e:  # noqa: BLE001 - a pool problem must not kill the search
-                self.log(f"  [python] process pool failed ({type(e).__name__}: {e}); running {name} serially")
-                self.close()
-        every = max(1, n // 10)
-        for i, r in enumerate(rows):
-            self._sim(r, history=False)
-            if n >= 40 and ((i + 1) % every == 0 or i + 1 == n):
-                self.log(f"  [{i + 1}/{n}] {name}")
-
-    def _run_batch_parallel(self, rows: list[SimRow], name: str) -> None:
-        from concurrent.futures import as_completed
-
-        n = len(rows)
-        chunk = max(1, min(25, n // (self.workers * 4)))
-        chunks = [rows[i : i + chunk] for i in range(0, n, chunk)]
-        pool = self._get_pool()
-        futures = {pool.submit(_pool_sim, c): c for c in chunks}
-        done = 0
-        every = max(1, n // 10)
-        next_mark = every
-        # generous: flight ~0.05s, cold start ~10s; a stuck pool falls back to serial
-        from .pipeline import check_cancel
-
-        for fut in as_completed(futures, timeout=120.0 + 2.0 * n / self.workers):
-            check_cancel()
-            rows_chunk = futures[fut]
-            for r, (alt, vel, t_ap) in zip(rows_chunk, fut.result(), strict=True):
-                r.max_alt_ft, r.max_vel_fps, r.t_apogee_s = round(alt, 1), round(vel, 1), round(t_ap, 2)
-            done += len(rows_chunk)
-            if n >= 40 and (done >= next_mark or done == n):
-                self.log(f"  [{done}/{n}] {name} ({self.workers} workers)")
-                while next_mark <= done:
-                    next_mark += every
-
-    def export(self, row: SimRow, name: str) -> pd.DataFrame:
-        h = self._sim(row)
-        h.to_csv(self.history_dir / (safe_name(name) + ".csv"), index=False)
-        return h
-
-    def history(self, row: SimRow, name: str) -> pd.DataFrame:
-        return self._sim(row)
 
 
 def safe_name(s: str) -> str:

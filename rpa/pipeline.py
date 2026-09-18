@@ -13,8 +13,8 @@ import pandas as pd
 
 from . import cdx1, manifest
 from . import history as H
-from .backends import OpenRocketBackend, PythonBackend, RASAeroBackend, SimBackend
-from .jobs import AERO_EXPORT, INSPECT, JobClient
+from .backends import OpenRocketBackend, RASAeroBackend, SimBackend
+from .jobs import INSPECT, JobClient
 from .models import SUBSONIC, SUPERSONIC, Characterization, Design, MassRow, ProfileEligibility, SimRow
 from .motors import MotorSet, load_motor_set, motor_table, pick_spanning, stage_motor_files, staged_motors, staged_motors_current
 from .openrocket import KG_TO_LB, OpenRocket
@@ -140,7 +140,7 @@ class Pipeline:
     def select_sustainers(self) -> dict:
         """Pick the sustainers to search and write output/sustainers_selected.json.
         `span` flies one reference booster (median impulse, characterization
-        delays) under every candidate on the python backend and keeps the
+        delays) under every candidate on the search backend and keeps the
         candidates at the min / max / evenly spaced apogee."""
         ms = self.ms
         key = self._sustainer_selection_key()
@@ -176,14 +176,11 @@ class Pipeline:
 
     def _sustainer_sweep(self) -> tuple[list[dict], str]:
         """Apogee of one reference booster under every sustainer candidate,
-        sorted ascending. Python backend only: needs the aero tables."""
+        sorted ascending, on the search backend."""
         ms = self.ms
         if self.cfg["mass_model"]["method"] != "openrocket":
             raise ValueError("sustainer_selection.mode 'span' needs mass_model.method: openrocket (the manual mass model has one sustainer weight)")
-        try:
-            be = PythonBackend(self.cfg, ms, self.site, self.ref_diameter_in, log=lambda *_: None, workers=1)
-        except (FileNotFoundError, ValueError) as e:
-            raise RuntimeError(f"sustainer_selection.mode 'span' flies the candidates on the python backend and needs the aero tables (`rpa aero`): {e}") from e
+        be = self.backend()
         ref = sorted(ms.boosters, key=lambda b: b.total_impulse_ns)[len(ms.boosters) // 2]
         c = self.cfg["characterization"]
         mass = self.load_mass()
@@ -203,8 +200,7 @@ class Pipeline:
 
     @property
     def ref_diameter_in(self) -> float:
-        v = self.cfg["python_sim"].get("ref_diameter_in")
-        return float(v) if v else cdx1.reference_diameter_in(self.template)
+        return cdx1.reference_diameter_in(self.template)
 
     def openrocket(self) -> OpenRocket:
         if self._or is None:
@@ -224,14 +220,12 @@ class Pipeline:
                 b = OpenRocketBackend(self.cfg, self.openrocket(), self.ms, log=log)
                 b.set_site_defaults(self.site)
                 self._backend = b
-            elif self.cfg["backend"] == "python":
-                b = PythonBackend(self.cfg, self.ms, self.site, self.ref_diameter_in, log=log)
-                log(f"  [python] aero tables from {self.cfg.path('aero_dir')}:\n    " + b.aero.describe().replace("\n", "\n    "))
-                self._backend = b
             elif self.cfg["backend"] == "rasaero_native":
                 self._backend = self.native_backend()
-            else:
+            elif self.cfg["backend"] == "rasaero":
                 self._backend = RASAeroBackend(self.cfg, self.template, motor_file, motor_dir, self.jobs(), log=log)
+            else:
+                raise ValueError(f"backend must be rasaero_native | rasaero | openrocket, not {self.cfg['backend']!r}")
         return self._backend
 
     def rasaero_engine(self) -> str:
@@ -267,7 +261,7 @@ class Pipeline:
         return RASAeroBackend(self.cfg, self.template, motor_file, motor_dir, self.jobs(), log=log)
 
     def close(self):
-        """Release the python backend's worker processes (no-op otherwise)."""
+        """Release the backend's host processes (no-op otherwise)."""
         be = self._backend
         if be is not None and hasattr(be, "close"):
             be.close()
@@ -323,11 +317,9 @@ class Pipeline:
         log(f"inspection output in {job.dir}: " + ", ".join(sorted(p.name for p in job.dir.iterdir())))
         return job.dir
 
-    # ---- input check (python backend) --------------------------------------
+    # ---- input check -------------------------------------------------------
     def check(self) -> list[str]:
         """Validate the input set up front. Returns the list of problems."""
-        from .aero import STACK, SUSTAINER, AeroSet
-
         problems = []
         for key, what in (("ork", "OpenRocket model (.ork)"), ("cdx1", "RASAero model (.CDX1)")):
             f = self.cfg.file(key)
@@ -353,194 +345,21 @@ class Pipeline:
             log(f"  reference diameter {self.ref_diameter_in:.3f} in; launch site {self.site}")
         except Exception as e:
             problems.append(f"CDX1: {e}")
-        aero_dir = self.cfg.path("aero_dir")
         from .native import engine_status
 
         st = engine_status(self.cfg)
         log(f"  RASAero engine: {'native (' + str(st['engine']) + ')' if st['ok'] else 'VM (' + st['detail'] + ')'}")
         if self.cfg["backend"] == "rasaero_native" and not st["ok"]:
             problems.append("backend rasaero_native: " + st["detail"])
-        if self.cfg["backend"] == "python":
-            try:
-                aero = AeroSet.load(aero_dir)
-                log("  aero tables:\n    " + aero.describe().replace("\n", "\n    "))
-                nozs = [b.nozzle_exit_in for b in ms.boosters if b.nozzle_exit_in]
-                for noz in (min(nozs), max(nozs)) if nozs else (None,):
-                    problems += aero.coverage_problems(STACK, noz, 2.5, 50000.0)
-                snozs = [m.nozzle_exit_in for m in ms.sustainer_candidates if m.nozzle_exit_in]
-                for noz in (min(snozs), max(snozs)) if snozs else (None,):
-                    problems += aero.coverage_problems(SUSTAINER, noz, 3.0, 50000.0)
-            except (FileNotFoundError, ValueError) as e:
-                problems.append(f"aero tables: {e}")
-            refs = [p for p in self.cfg.path("reference_dir").glob("*.json") if p.with_suffix(".csv").exists()] if self.cfg.path("reference_dir").exists() else []
-            if not refs:
-                problems.append(f"no RASAero reference cases in {self.cfg.path('reference_dir')} - the python backend is unvalidated for this vehicle (run `rpa reference` then `rpa validate`)")
-            else:
-                log(f"  {len(refs)} RASAero reference case(s)")
+        elif self.cfg["backend"] not in ("rasaero_native", "rasaero", "openrocket"):
+            problems.append(f"backend must be rasaero_native | rasaero | openrocket, not {self.cfg['backend']!r}")
         for pr in problems:
             log(f"  !! {pr}")
         if not problems:
             log("  OK")
         return problems
 
-    # ---- aero tables from RASAero's Aero Plots (VM worker) -----------------
-    def _aero_cdx1(self, config: str, nozzle_in: float | None):
-        """The template with the site, surface and one design-level nozzle
-        set, for an Aero Plots export of `config` (stack | sustainer)."""
-        import copy
-
-        from .aero import STACK
-
-        tree = copy.deepcopy(self.template)
-        cdx1.apply_launch_site(tree, {k: v for k, v in self.cfg["launch_site"].items() if v is not None})
-        cdx1.apply_surface(tree, self.cfg["surface_finish"])
-        if nozzle_in is not None:
-            cdx1.apply_nozzles(tree, nozzle_in if config != STACK else None, nozzle_in if config == STACK else None)
-        return tree
-
-    def aero_export(self, config: str, nozzle_in: float | None, altitude_ft: float | None, plot_range: str = "Mach 5", mach_alt: list | None = None, name: str | None = None) -> Path:
-        """One Aero Plots CSV export. Writes a CDX1 with the design-level
-        nozzle set, runs the job, copies the CSV into input/aero/ under the
-        naming convention rpa.aero expects."""
-        import shutil
-
-        motor_dir, motor_file = self.motor_paths()
-        jobs = self.jobs()
-        alt = float(altitude_ft if altitude_ft is not None else (self.site.get("altitude_ft") or 0.0))
-        fname = f"{config}_alt{alt:g}" + (f"_noz{nozzle_in:g}" if nozzle_in is not None else "") + ".csv"
-        # opt-in: skip the Options->Mach-Alt dialog by writing the points into
-        # the CDX1 up front (needs a live check that RASAero loads them on
-        # File->Open - see config.yaml rasaero.mach_alt_via_cdx1)
-        via_cdx1 = bool(mach_alt) and bool(self.cfg["rasaero"].get("mach_alt_via_cdx1"))
-        job = jobs.create(name or f"aero-{fname[:-4]}", AERO_EXPORT, motor_file=motor_file, motor_dir=motor_dir, n_rows=1, export=True, extra={"config": config, "plot_range": plot_range, "mach_alt": None if via_cdx1 else mach_alt})
-        tree = self._aero_cdx1(config, nozzle_in)
-        if via_cdx1:
-            cdx1.apply_mach_alt(tree, mach_alt)
-        cdx1.save(tree, job.input_cdx1)
-        jobs.submit(job)
-        jobs.wait(job)
-        if not job.export_csv.exists():
-            raise RuntimeError(f"worker finished {job.dir.name} but {job.export_csv.name} is missing")
-        dst = self.cfg.path("aero_dir") / fname
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(job.export_csv, dst)
-        log(f"  aero table -> {dst}")
-        return dst
-
-    def aero_export_batch(self, config: str, nozzle_in: float | None, items: list[tuple[float, Path]], plot_range: str = "Mach 5", name: str | None = None) -> list[Path]:
-        """Several Aero Plots tables that share a config+nozzle (one CDX1,
-        one open document) across altitudes, in one worker job - opt-in
-        (aero_tables.batch_altitudes), needs a live check on the VM before
-        it replaces the per-table path by default."""
-        import shutil
-
-        motor_dir, motor_file = self.motor_paths()
-        jobs = self.jobs()
-        spec_items = [{"export_csv": f"table{i}.csv", "points": [[0, alt], [25, alt]]} for i, (alt, _dst) in enumerate(items)]
-        job = jobs.create(name or f"aero-batch-{config}-noz{nozzle_in}", AERO_EXPORT, motor_file=motor_file, motor_dir=motor_dir, n_rows=1, export=False, extra={"config": config, "plot_range": plot_range, "mach_alt_items": spec_items})
-        cdx1.save(self._aero_cdx1(config, nozzle_in), job.input_cdx1)
-        jobs.submit(job)
-        jobs.wait(job)
-        made = []
-        for item, (_alt, dst) in zip(spec_items, items, strict=True):
-            src = job.dir / item["export_csv"]
-            if not src.exists():
-                raise RuntimeError(f"worker finished {job.dir.name} but {item['export_csv']} is missing")
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            log(f"  aero table -> {dst}")
-            made.append(dst)
-        return made
-
-    def aero_plan(self) -> list[tuple[str, float | None, float, Path]]:
-        """The (config, nozzle, altitude, file) tables `rpa aero` exports for
-        this motor set, per config.yaml `aero_tables`."""
-        from .aero import STACK, SUSTAINER
-
-        a = self.cfg["aero_tables"]
-        ms = self.ms
-        bn = sorted({b.nozzle_exit_in for b in ms.boosters if b.nozzle_exit_in})
-        sn = sorted({m.nozzle_exit_in for m in ms.sustainer_candidates if m.nozzle_exit_in})
-        # power-on CD scales exactly with the nozzle area (rpa.aero), so one
-        # nozzle per configuration is enough; the largest gives K the most digits
-        stack_noz = a["stack_nozzles_in"]
-        if stack_noz == "auto":
-            stack_noz = [bn[-1]] if bn else [None]
-        sus_noz = a["sustainer_nozzles_in"]
-        if sus_noz == "auto":
-            sus_noz = [sn[-1]] if sn else [None]
-        plan = [(STACK, n, alt) for alt in a["altitudes_ft"] for n in stack_noz] + [(SUSTAINER, n, alt) for alt in a["altitudes_ft"] for n in sus_noz]
-        out = []
-        for cfg_name, noz, alt in plan:
-            fname = f"{cfg_name}_alt{float(alt):g}" + (f"_noz{noz:g}" if noz is not None else "") + ".csv"
-            out.append((cfg_name, noz, float(alt), self.cfg.path("aero_dir") / fname))
-        return out
-
-    def stage_aero(self, force: bool = False, clear_stale: bool = True) -> list[Path]:
-        """Export the full set of aero tables the python backend needs.
-        Once every table is in place, clears any stack_*/sustainer_* table
-        no longer in the plan (a motor or nozzle-set swap) so a stale table
-        can't linger and get counted as coverage - files still wanted are
-        left alone regardless of `force`. `clear_stale` MUST be false when
-        the motor set is restricted (--limit / --boosters): the plan then
-        covers only part of the set."""
-        a = self.cfg["aero_tables"]
-        plan = self.aero_plan()
-        log(f"aero: {len(plan)} table(s): stack nozzles {sorted({n for c, n, _, _ in plan if c == 'stack'})} in, sustainer nozzles {sorted({n for c, n, _, _ in plan if c == 'sustainer'})} in, altitudes {a['altitudes_ft']} ft")
-        made = self._export_aero_plan(plan, force)
-        if clear_stale:
-            aero_dir = self.cfg.path("aero_dir")
-            wanted = {dst for _, _, _, dst in plan}
-            stale = [p for pat in ("stack_*.csv", "sustainer_*.csv") for p in aero_dir.glob(pat) if p not in wanted] if aero_dir.exists() else []
-            for p in stale:
-                p.unlink()
-            if stale:
-                log(f"aero: cleared {len(stale)} stale table(s) no longer in the plan")
-        return made
-
-    def _export_aero_plan(self, plan, force: bool) -> list[Path]:
-        a = self.cfg["aero_tables"]
-        made = []
-        if self.rasaero_engine() == "native":
-            be = self.native_backend()
-            try:
-                for cfg_name, noz, alt, dst in plan:
-                    if dst.exists() and not force:
-                        log(f"  {dst.name}: exists, skipping")
-                    else:
-                        be.aero_table(cfg_name, alt, noz, dst, mach_max=float(a.get("mach_max", 25.0)))
-                        log(f"  aero table -> {dst}")
-                    made.append(dst)
-            finally:
-                be.close()
-            return made
-        if a.get("batch_altitudes") and len(a["altitudes_ft"]) > 1:
-            # one open CDX1 per (config, nozzle) covers every altitude - see
-            # aero_export_batch. Still opt-in: needs a live VM check first.
-            groups: dict[tuple[str, float | None], list[tuple[float, Path]]] = {}
-            for cfg_name, noz, alt, dst in plan:
-                groups.setdefault((cfg_name, noz), []).append((alt, dst))
-            for (cfg_name, noz), items in groups.items():
-                todo = []
-                for alt, dst in items:
-                    if dst.exists() and not force:
-                        log(f"  {dst.name}: exists, skipping")
-                        made.append(dst)
-                    else:
-                        todo.append((alt, dst))
-                if todo:
-                    made += self.aero_export_batch(cfg_name, noz, todo, plot_range=a["plot_range"])
-            return made
-        for cfg_name, noz, alt, dst in plan:
-            fname = dst.name
-            if dst.exists() and not force:
-                log(f"  {fname}: exists, skipping")
-                made.append(dst)
-                continue
-            made.append(self.aero_export(cfg_name, noz, alt, plot_range=a["plot_range"], mach_alt=[[0, alt], [25, alt]]))
-        return made
-
-    # ---- RASAero reference cases + validation of the python backend --------
+    # ---- RASAero reference cases + validation of the native engine ---------
     def reference_rows(self, n_cases: int) -> list[SimRow]:
         """A spread of (booster, sustainer, delays) covering short and long
         coasts and every searched sustainer."""
@@ -612,10 +431,10 @@ class Pipeline:
             be.close()
         return made
 
-    def stage_validate(self, engine: str | None = None) -> pd.DataFrame:
-        """Compare a backend against the RASAero reference exports: the
-        python backend (default), or `engine="native"` for RASAero's own
-        engine on this machine vs the VM exports (native/VALIDATION.md)."""
+    def stage_validate(self) -> pd.DataFrame:
+        """Fly the RASAero reference exports on the native engine and compare
+        (native/VALIDATION.md). Meaningful with VM exports (`rpa reference
+        --engine vm`); native-made references only prove determinism."""
         from .validate import load_cases, run_validation
 
         ref_dir = self.cfg.path("reference_dir")
@@ -625,14 +444,9 @@ class Pipeline:
         offset = 0.0
         if (ref_dir / "altitude_offset.json").exists():
             offset = float(json.loads((ref_dir / "altitude_offset.json").read_text())["offset_ft"])
-        if engine == "native":
-            be = self.native_backend(motor_files=[])
-            out_dir = self.out / "validation_native"
-            log(f"validate: {len(cases)} case(s) vs RASAero native engine; tolerances {self.cfg['validation']}")
-        else:
-            be = PythonBackend(self.cfg, self.ms, self.site, self.ref_diameter_in, log=log)
-            out_dir = self.out / "validation"
-            log(f"validate: {len(cases)} case(s) vs python backend; tolerances {self.cfg['validation']}")
+        be = self.native_backend(motor_files=[])
+        out_dir = self.out / "validation"
+        log(f"validate: {len(cases)} case(s) vs RASAero native engine; tolerances {self.cfg['validation']}")
         try:
             df = run_validation(cases, be, self.cfg["validation"], out_dir, alt_offset_ft=offset, log=log)
         finally:
@@ -644,8 +458,9 @@ class Pipeline:
 
     # ---- final confirmation of chosen designs in RASAero itself ------------
     def stage_confirm(self, top_n: int = 5, include_unsolved: bool = False, designs: list[str] | None = None) -> pd.DataFrame:
-        """Re-run the chosen designs through RASAero (one batched CDX1 via the
-        VM worker) and compare its apogee with the python backend's. `designs`:
+        """Re-run the chosen designs through RASAero (the native engine, or
+        one batched CDX1 via the VM worker) and compare its apogee with the
+        optimizer's. `designs`:
         explicit keys (booster|sustainer|profile, e.g. the GUI shortlist)
         instead of the `top_n` closest to the target."""
         all_designs = self.load_designs()
@@ -672,8 +487,8 @@ class Pipeline:
             be.close()
         recs = []
         for d, r in zip(todo, rows, strict=False):
-            recs.append({"booster": d.booster, "sustainer": d.sustainer, "profile": d.profile, "sep_delay_s": d.sep_delay_s, "ign_delay_s": d.ign_delay_s, "apogee_python_ft": d.apogee_ft, "apogee_rasaero_ft": r.max_alt_ft, "diff_ft": (r.max_alt_ft - d.apogee_ft) if r.max_alt_ft is not None else None, "diff_pct": (100.0 * (r.max_alt_ft - d.apogee_ft) / d.apogee_ft) if r.max_alt_ft is not None else None, "max_vel_rasaero_fps": r.max_vel_fps, "t_apogee_rasaero_s": r.t_apogee_s})
-            log(f"  {d.booster} {d.profile} sep={d.sep_delay_s} ign={d.ign_delay_s}: python {d.apogee_ft:.0f} ft, RASAero {r.max_alt_ft if r.max_alt_ft is None else round(r.max_alt_ft)} ft ({recs[-1]['diff_pct']:+.2f}%)" if r.max_alt_ft is not None else f"  {d.booster}: no RASAero result")
+            recs.append({"booster": d.booster, "sustainer": d.sustainer, "profile": d.profile, "sep_delay_s": d.sep_delay_s, "ign_delay_s": d.ign_delay_s, "apogee_search_ft": d.apogee_ft, "apogee_rasaero_ft": r.max_alt_ft, "diff_ft": (r.max_alt_ft - d.apogee_ft) if r.max_alt_ft is not None else None, "diff_pct": (100.0 * (r.max_alt_ft - d.apogee_ft) / d.apogee_ft) if r.max_alt_ft is not None else None, "max_vel_rasaero_fps": r.max_vel_fps, "t_apogee_rasaero_s": r.t_apogee_s})
+            log(f"  {d.booster} {d.profile} sep={d.sep_delay_s} ign={d.ign_delay_s}: search {d.apogee_ft:.0f} ft, RASAero {r.max_alt_ft if r.max_alt_ft is None else round(r.max_alt_ft)} ft ({recs[-1]['diff_pct']:+.2f}%)" if r.max_alt_ft is not None else f"  {d.booster}: no RASAero result")
         df = pd.DataFrame(recs)
         df.to_csv(self.out / "confirm.csv", index=False)
         return df

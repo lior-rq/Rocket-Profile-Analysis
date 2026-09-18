@@ -45,7 +45,15 @@ def history_frame_payload(df: pd.DataFrame, max_points: int) -> dict:
     summary = {}
     try:
         t_bo = H.burnout_time(df)
-        summary = {"apogee_ft": float(df["altitude_ft"].max()), "t_apogee_s": float(df.loc[df["altitude_ft"].idxmax(), "time_s"]), "max_mach": float(df["mach"].max()), "max_vel_fps": float(df["velocity_fps"].max()), "t_burnout_s": t_bo, "t_sep_s": H.separation_time(df, after=t_bo), "t_ign_s": H.ignition_time(df, after=t_bo)}
+        t_sep, t_ign = H.separation_time(df, after=max(0.0, t_bo - 0.05)), H.ignition_time(df, after=t_bo)
+        summary = {"apogee_ft": float(df["altitude_ft"].max()), "t_apogee_s": float(df.loc[df["altitude_ft"].idxmax(), "time_s"]), "max_mach": float(df["mach"].max()), "max_vel_fps": float(df["velocity_fps"].max()), "t_burnout_s": t_bo, "t_sep_s": t_sep, "t_ign_s": t_ign}
+        if "accel_fps2" in df:
+            summary["max_accel_g"] = float(df["accel_fps2"].max()) / 32.174
+        if t_sep is not None:
+            summary["mach_at_sep"] = H.value_at(df, "mach", t_sep)
+            summary["stack_max_mach"] = float(df.loc[df["time_s"] <= t_sep, "mach"].max())
+        if t_ign is not None:
+            summary.update({"vel_at_ign_fps": H.value_at(df, "velocity_fps", t_ign), "mach_at_ign": H.value_at(df, "mach", t_ign), "alt_at_ign_ft": H.value_at(df, "altitude_ft", t_ign)})
     except Exception:
         pass
     return {"n": n, "stride": stride, "columns": cols, "summary": summary}
@@ -70,6 +78,9 @@ class Service:
         self._sig = None
         self._snapshot = None  # (key, dict)
         self._samples = None  # (mtime_ns, parsed designs_samples.json)
+        self._or = None  # ((ork path, mtime_ns), OpenRocket) for on-demand mass rows
+        self._or_lock = threading.Lock()
+        self._stage_masses: dict[tuple, object] = {}
         self.vm = None
         self.warmup = {"engine": None, "openrocket": None, "started": time.time(), "done": False}
         try:
@@ -402,9 +413,12 @@ class Service:
         df = H.read_rasaero_export(p) if "Time (sec)" in df.columns else pd.read_csv(p)
         return {"path": rel, **history_frame_payload(df, max_points)}
 
-    def simulate(self, booster: str, sustainer: str, profile: str, sep: float, ign: float, max_points: int = 1500) -> dict:
+    def simulate(self, booster: str, sustainer: str, profile: str, sep: float, ign: float, hardware_mass_lb: float | None = None, max_points: int = 1500) -> dict:
         """On-demand flight for a design that has not gone through verify yet,
-        on the native engine."""
+        on the native engine. `hardware_mass_lb` overrides the mass table's dry
+        mass (OpenRocket mass model only)."""
+        from dataclasses import asdict
+
         from ..pipeline import Pipeline
         from ..search import make_row
 
@@ -417,9 +431,31 @@ class Service:
         mass = pl.load_mass().get((booster, sustainer))
         if mass is None:
             raise ValueError(f"no mass row for {booster} + {sustainer} (run the mass stage first)")
+        if hardware_mass_lb is not None and hardware_mass_lb != mass.hardware_mass_lb:
+            mass = self._rescaled_mass(pl, mass, hardware_mass_lb)
         row = make_row(booster, profile, sep, ign, pl.ms, mass, pl.cfg)
         df = pl.native_backend(log=lambda *_: None).history(row, "on-demand")
-        return {"path": None, **history_frame_payload(df, max_points)}
+        return {"path": None, "mass": asdict(mass), **history_frame_payload(df, max_points)}
+
+    def _rescaled_mass(self, pl, mass, hardware_mass_lb: float):
+        """The mass row at another dry mass, from OpenRocket's stage masses
+        (cached per .ork version and motor pair; one JVM call per pair)."""
+        from ..massmodel import mass_row
+
+        if pl.cfg["mass_model"]["method"] != "openrocket":
+            raise ValueError("a hardware mass override needs mass_model.method = openrocket")
+        if hardware_mass_lb <= 0:
+            raise ValueError("hardware mass must be positive")
+        b, s = pl.ms.booster(mass.booster), pl.ms.sustainer_by_label(mass.sustainer)
+        ork = pl.cfg.path("ork")
+        key = (str(ork), ork.stat().st_mtime_ns, b.label, s.label)
+        with self._or_lock:
+            sm = self._stage_masses.get(key)
+            if sm is None:
+                if self._or is None or self._or[0] != key[:2]:
+                    self._or = (key[:2], pl.openrocket())
+                sm = self._stage_masses[key] = self._or[1].stage_masses(s, b)
+        return mass_row(b.label, sm, b.prop_mass_kg, hardware_mass_lb, s.label)
 
     def motors(self) -> dict:
         from ..eng import load_motors

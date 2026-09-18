@@ -1,7 +1,7 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { api, downloadFile, fileUrl } from "@/lib/api";
 import { dateTime, fmt, fmtFt, isNum, signed } from "@/lib/format";
 import { useApp, useCached } from "@/lib/store";
@@ -62,9 +62,9 @@ export function ResultsPage() {
   return <StepPage id="results" summary="Every (booster, sustainer, profile) candidate with the delays found, its apogee and status. Star the designs worth keeping: the shortlist compares them side by side and sends them to RASAero together."
     action={<ActionPanel title="Results" buttons={<>{bundle("solved", d.n_solved, `⬇ Solved → RASAero (${d.n_solved || 0})`)}{bundle("shortlist", shortlist.length, `⬇ Shortlist → RASAero (${shortlist.length})`)}<Button onClick={() => api("/api/reveal", { path: "output" }).catch((e: any) => toast.error(e.message))}>Reveal output folder</Button><RunButton stage="report" label="Rebuild report & plots" /><ConfirmButton size="default" label="Snapshot results" armedLabel="Click again to snapshot" onClick={async () => { try { const r = await api("/api/archive", {}); toast.success(`snapshot ${r.name} (${r.files.length} files) in output-archive/`); } catch (e: any) { toast.error(e.message); } }} /></>}
       stats={<StatList grid><Stat label="target" value={fmt(d.target_ft, 0)} unit="ft" /><Stat label="designs" value={d.n} /><Stat label="solved" value={d.n_solved} cls={d.n_solved ? "ok" : "warn"} /><Stat label="shortlisted" value={shortlist.length} cls={shortlist.length ? "ok" : null} />{Object.entries((d.counts || {}) as Record<string, number>).filter(([k]) => k !== "solved").map(([k, v]) => <Stat key={k} label={k} value={v} />)}{Object.entries((d.eligibility || {}) as Record<string, any>).map(([p, v]) => <Stat key={p} label={`${p} eligible`} value={`${v.eligible}/${v.total}`} />)}{d.characterization ? <Stat label="Mach at burnout" value={`${fmt(d.characterization.mach_burnout_min, 2)}–${fmt(d.characterization.mach_burnout_max, 2)}`} /> : null}{d.sustainer?.motors ? (d.sustainer.motors.length === 1 ? <Stat label="sustainer" value={String(d.sustainer.motors[0].label)} sub={`${fmt(d.sustainer.motors[0].total_impulse_ns, 0)} N·s`} /> : <Stat label="sustainers" value={Number(d.sustainer.motors.length)} unit="searched" sub={(d.sustainer.motors as any[]).map((x: any) => x.label).join(", ")} wide />) : null}{s.mass.table && !s.mass.table.error ? <Stat label="pad weight" value={`${fmt(s.mass.table.combined_wt_lb[0], 0)}–${fmt(s.mass.table.combined_wt_lb[1], 0)}`} unit="lb" /> : null}</StatList>} />}
-    how={<p><b>Status: </b>solved = an ignition delay hits the target within tolerance · overpowered = apogee stays above the target even at the shortest allowed coast · underpowered = even the best coast falls short · unsolved = a bracket was found but did not converge. <b>Δ target</b> is apogee − target. <b>Matrix</b> shows every booster against every sustainer, <b>Trade space</b> plots apogee against the staging numbers, and <b>Shortlist</b> compares the starred designs and confirms them in RASAero.</p>}>
-    <Card><Tabs value={tab} onValueChange={(v) => setSearch({ tab: v })}><TabsList><TabsTrigger value="designs" extra={d.n}>Designs</TabsTrigger><TabsTrigger value="matrix">Matrix</TabsTrigger><TabsTrigger value="tradespace">Trade space</TabsTrigger><TabsTrigger value="shortlist" extra={shortlist.length || null}>Shortlist</TabsTrigger><TabsTrigger value="eligibility" extra={nElig}>Eligibility</TabsTrigger><TabsTrigger value="characterization">Characterization</TabsTrigger><TabsTrigger value="plots">Plots</TabsTrigger><TabsTrigger value="previous">Previous runs</TabsTrigger><TabsTrigger value="report">Report</TabsTrigger></TabsList></Tabs>
-      {tab === "designs" ? <DesignsTab {...common} /> : tab === "matrix" ? <MatrixTab {...common} /> : tab === "tradespace" ? <TradespaceTab {...common} /> : tab === "shortlist" ? <ShortlistTab {...common} /> : tab === "eligibility" ? <EligibilityTab {...common} /> : tab === "characterization" ? <CharacterizationTab {...common} /> : tab === "plots" ? <PlotsTab {...common} /> : tab === "previous" ? <PreviousTab {...common} /> : <ReportTab />}</Card>
+    how={<p><b>Status: </b>solved = an ignition delay hits the target within tolerance · overpowered = apogee stays above the target even at the shortest allowed coast · underpowered = even the best coast falls short · unsolved = a bracket was found but did not converge. <b>Δ target</b> is apogee − target. <b>Matrix</b> shows every booster against every sustainer, <b>Trade space</b> plots apogee against the staging numbers, <b>Shortlist</b> compares the starred designs and confirms them in RASAero, and <b>Customize</b> re-flies one design live with your own delays and dry mass.</p>}>
+    <Card><Tabs value={tab} onValueChange={(v) => setSearch({ tab: v })}><TabsList><TabsTrigger value="designs" extra={d.n}>Designs</TabsTrigger><TabsTrigger value="matrix">Matrix</TabsTrigger><TabsTrigger value="tradespace">Trade space</TabsTrigger><TabsTrigger value="shortlist" extra={shortlist.length || null}>Shortlist</TabsTrigger><TabsTrigger value="customize">Customize</TabsTrigger><TabsTrigger value="eligibility" extra={nElig}>Eligibility</TabsTrigger><TabsTrigger value="characterization">Characterization</TabsTrigger><TabsTrigger value="plots">Plots</TabsTrigger><TabsTrigger value="previous">Previous runs</TabsTrigger><TabsTrigger value="report">Report</TabsTrigger></TabsList></Tabs>
+      {tab === "designs" ? <DesignsTab {...common} /> : tab === "matrix" ? <MatrixTab {...common} /> : tab === "tradespace" ? <TradespaceTab {...common} /> : tab === "shortlist" ? <ShortlistTab {...common} /> : tab === "customize" ? <CustomizeTab {...common} /> : tab === "eligibility" ? <EligibilityTab {...common} /> : tab === "characterization" ? <CharacterizationTab {...common} /> : tab === "plots" ? <PlotsTab {...common} /> : tab === "previous" ? <PreviousTab {...common} /> : <ReportTab />}</Card>
     <Lightbox src={lb} onClose={() => setLb(null)} />
   </StepPage>;
 }
@@ -202,6 +202,74 @@ function ShortlistTab(p: P) {
     <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[12px] text-muted">{items.length} shortlisted design{items.length === 1 ? "" : "s"}{gone.length ? ` · ${gone.length} starred key(s) no longer in designs.csv` : ""} · kept in output/shortlist.json</span><div className="flex gap-2"><RunButton stage="confirm" args={["--designs", items.map((r: any) => r.key).join(",")]} label={`Confirm these ${items.length} in RASAero`} primary /><Button onClick={async () => { try { const n = await downloadFile("/download/bundle?which=shortlist"); toast.success(`downloaded ${n}`); } catch (e: any) { toast.error(e.message); } }}>⬇ RASAero bundle</Button><ConfirmButton label="Clear shortlist" armedLabel="Click again to clear" onClick={() => setShortlist({ keys: [] })} /></div></div>
     <div className="overflow-auto rounded border border-line"><table className="w-full text-[12.5px]"><thead className="bg-panel-2"><tr><th className="px-2 py-1" />{items.map((r: any, i: number) => <th key={r.key} className="px-2 py-1 text-right"><span className="mr-1 inline-block h-2.5 w-2.5 rounded-full" style={{ background: PALETTE[i % PALETTE.length] }} /><button type="button" className="text-accent" onClick={() => selectDesign(r.key)}>{r.booster}</button><br /><span className="text-muted">{r.sustainer} · {r.profile}</span> <Button size="sm" variant="ghost" title="remove from the shortlist" onClick={() => setShortlist({ remove: r.key })}>×</Button></th>)}</tr></thead><tbody>{metrics.map(([label, f]) => <tr key={label} className="border-t border-line"><td className="px-2 py-1 text-muted">{label}</td>{items.map((r: any) => <td key={r.key} className="px-2 py-1 text-right font-mono">{f(r)}</td>)}</tr>)}</tbody></table></div>
     <div className="card tight"><div className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted">Flights overlaid <Select className="h-7 normal-case tracking-normal" value={ov} onChange={(e) => setSearch({ ov: e.target.value })}><option value="mach">Mach</option><option value="altitude">altitude</option><option value="velocity">velocity</option></Select>{withH.some((x) => x.dash) ? <span className="font-normal normal-case tracking-normal">dashed = on-demand estimate, not verified</span> : null}</div>{withH.length ? <HistoryOverlay items={withH} mode={ov} /> : <div className="text-[12px] text-muted">{hqs.some((q) => q.isLoading) ? "Loading flights…" : "no flight histories yet"}</div>}</div>
+  </div>;
+}
+
+function useDebounced(v: string, ms = 250) { const [d, setD] = useState(v); useEffect(() => { const t = setTimeout(() => setD(v), ms); return () => clearTimeout(t); }, [v, ms]); return d; }
+
+function ParamSlider({ label, hint, value, min, max, step, onChange, disabled, base }: { label: string; hint: ReactNode; value: number | null; min: number; max: number; step: number; onChange: (v: number) => void; disabled?: boolean; base?: ReactNode }) {
+  const [text, setText] = useState(value == null ? "" : String(value));
+  useEffect(() => { if (value == null ? text !== "" : Number(text) !== value) setText(value == null ? "" : String(value)); }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  const set = (v: string) => { setText(v); const n = Number(v); if (v !== "" && Number.isFinite(n) && n >= min) onChange(n); };
+  return <div className={cn("rounded-md border border-line bg-panel-2 px-3 py-2", disabled && "opacity-60")}>
+    <div className="flex items-center justify-between gap-2"><span className="text-[12px] font-medium">{label}</span><Input type="number" step={step} min={min} className="h-7 w-24 text-right font-mono" value={text} disabled={disabled} onChange={(e) => set(e.target.value)} /></div>
+    <input type="range" className="accent-accent mt-1 w-full" min={min} max={Math.max(max, value ?? min)} step={step} value={value ?? min} disabled={disabled || value == null} onChange={(e) => set(e.target.value)} />
+    <div className="flex justify-between gap-2 text-[11px] text-muted"><span>{hint}</span>{base ? <span className="whitespace-nowrap">{base}</span> : null}</div>
+  </div>;
+}
+
+/* One design re-flown on the native engine with the user's delays and dry
+   mass; the optimizer's own flight stays beside it for comparison. */
+function CustomizeTab(p: P) {
+  const { s, d, cfg, search, setSearch, selectDesign } = p;
+  const { refresh } = useApp();
+  const { rows, loading, error } = useDesigns(d);
+  const sorted = useMemo(() => rows.slice().sort(byDev), [rows]);
+  const r = (search.sel && rows.find((x: any) => x.key === search.sel)) || sorted[0];
+  const mt = s.mass.table && !s.mass.table.error ? s.mass.table : null;
+  const manual = cfg.mass_model?.method === "manual";
+  const baseMass: number | null = manual || !mt ? null : isNum(mt.hardware_mass_lb) ? mt.hardware_mass_lb : isNum(mt.sustainer_dry_lb) && isNum(mt.booster_dry_lb) ? Math.round((mt.sustainer_dry_lb + mt.booster_dry_lb) * 10) / 10 : null;
+  const init = (row: any) => ({ key: row?.key as string | undefined, sep: isNum(row?.sep_delay_s) ? row.sep_delay_s : 0.5, ign: isNum(row?.ign_delay_s) ? row.ign_delay_s : 2, mass: baseMass });
+  const [q, setQ] = useState(() => init(r));
+  useEffect(() => { if (r && q.key !== r.key) setQ(init(r)); }, [r?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [mode, setMode] = useState("mach");
+  const [ov, setOv] = useState("altitude");
+  const [sep, ign, mass] = JSON.parse(useDebounced(JSON.stringify([q.sep, q.ign, q.mass]))) as [number, number, number | null];
+  const massParam = mass != null && mass !== baseMass ? mass : null;
+  const ver = `${d.mtime}|${s.inputs.inputs_mtime}|${mt ? mt.mtime : ""}`;
+  const fq = useQuery({
+    queryKey: ["custom-flight", r?.key, sep, ign, massParam, ver],
+    queryFn: () => api(`/api/flight?booster=${encodeURIComponent(r.booster)}&sustainer=${encodeURIComponent(r.sustainer)}&profile=${encodeURIComponent(r.profile || "")}&sep=${sep}&ign=${ign}${massParam != null ? "&mass=" + massParam : ""}`) as Promise<HistoryFrame & { mass: any }>,
+    enabled: !!r && !!r.sustainer, staleTime: Infinity, placeholderData: keepPreviousData,
+  });
+  const bq = useQuery({ ...historyQuery(r || {}, s, d), enabled: !!r });
+  if (loading) return <div className="text-muted">Loading designs…</div>;
+  if (error) return <Callout kind="err">{error.message}</Callout>;
+  if (!r) return <Callout kind="info">no designs to customize</Callout>;
+  const pr = cfg.profiles, sm = fq.data?.summary || {}, m = fq.data?.mass;
+  const dev = isNum(sm.apogee_ft) ? sm.apogee_ft - d.target_ft : null;
+  const viol = r.profile === "subsonic" && isNum(sm.stack_max_mach) && sm.stack_max_mach > pr.subsonic_max_mach ? `the stack reaches Mach ${fmt(sm.stack_max_mach, 3)} before separation (> ${pr.subsonic_max_mach})`
+    : r.profile === "supersonic" && isNum(sm.mach_at_sep) && sm.mach_at_sep < pr.supersonic_min_mach ? `Mach at separation ${fmt(sm.mach_at_sep, 3)} < ${pr.supersonic_min_mach}`
+    : r.profile === "decel_subsonic" && isNum(sm.mach_at_sep) && sm.mach_at_sep > pr.subsonic_max_mach ? `Mach at separation ${fmt(sm.mach_at_sep, 3)} > ${pr.subsonic_max_mach}` : null;
+  const changed = q.sep !== r.sep_delay_s || q.ign !== r.ign_delay_s || (q.mass != null && q.mass !== baseMass);
+  const cr = { ...r, sep_delay_s: sep, ign_delay_s: ign, t_apogee_s: sm.t_apogee_s, apogee_ft: sm.apogee_ft, mach_at_sep: sm.mach_at_sep, alt_at_ign_ft: sm.alt_at_ign_ft, vel_at_ign_fps: sm.vel_at_ign_fps, mach_at_ign: sm.mach_at_ign };
+  const saveMass = async () => { try { await api("/api/config", { set: { "mass_model.hardware_mass_lb": q.mass } }); toast.success(`hardware mass ${q.mass} lb saved to config.yaml — re-run mass and optimize to update the results`); await refresh(); } catch (e: any) { toast.error(e.message); } };
+  return <div className="flex flex-col gap-3">
+    <div className="flex flex-wrap items-center gap-2"><label className="inline-flex items-center gap-2 text-[12px]">design <Select className="h-7 max-w-[520px]" value={r.key} onChange={(e) => setSearch({ sel: e.target.value })}>{sorted.map((x: any) => <option key={x.key} value={x.key}>{x.booster} + {x.sustainer} · {x.profile} · {x.status} · Δ {signed(x.dev_ft)} ft</option>)}</Select></label><Badge status={STATUS_BADGE[r.status] || "todo"}>{r.status}</Badge><Button size="sm" variant="ghost" onClick={() => selectDesign(r.key)}>open in Designs →</Button><span className="flex-1" /><span className="text-[12px] text-muted">{fq.isFetching ? "simulating…" : fq.data ? "flown on the native engine · estimate, not verified" : ""}</span></div>
+    <div className="grid gap-2 md:grid-cols-3">
+      <ParamSlider label="separation delay [s]" hint="after booster burnout" value={q.sep} min={0} max={Math.max(5, pr.separation_delay_max_s)} step={0.05} base={isNum(r.sep_delay_s) ? `optimizer: ${fmt(r.sep_delay_s, 2)}` : null} onChange={(v) => setQ({ ...q, sep: v })} />
+      <ParamSlider label="ignition delay [s]" hint="after separation" value={q.ign} min={0} max={Math.max(30, pr.ignition_delay_max_s)} step={0.1} base={isNum(r.ign_delay_s) ? `optimizer: ${fmt(r.ign_delay_s, 2)}` : null} onChange={(v) => setQ({ ...q, ign: v })} />
+      <ParamSlider label="hardware (dry) mass [lb]" hint={manual ? "manual mass model: set the masses in config" : baseMass == null ? "no mass table yet" : "both stages scale with it"} value={q.mass} min={1} max={baseMass ? Math.round(baseMass * 1.5) : 100} step={1} base={baseMass != null ? `mass table: ${fmt(baseMass, 1)}${isNum(mt?.hardware_mass_lb) ? "" : " (.ork)"}` : null} onChange={(v) => setQ({ ...q, mass: v })} disabled={manual || baseMass == null} />
+    </div>
+    <div className="flex flex-wrap items-center gap-2"><Button size="sm" disabled={!changed} onClick={() => setQ(init(r))}>Reset to the optimizer's values</Button>{!manual && q.mass != null && q.mass !== baseMass ? <Button size="sm" title="sets mass_model.hardware_mass_lb; the mass and optimize stages then need a re-run" onClick={saveMass}>Save {q.mass} lb to config.yaml</Button> : null}<span className="text-[12px] text-muted">optimizer: sep {fmt(r.sep_delay_s, 2)} s · ign {fmt(r.ign_delay_s, 2)} s · apogee {fmt(r.apogee_ft, 0)} ft{baseMass != null ? ` · dry mass ${fmt(baseMass, 1)} lb` : ""}</span></div>
+    {fq.error ? <Callout kind="err">{(fq.error as Error).message}</Callout> : null}
+    {fq.data ? <>
+      <StatList grid className={cn(fq.isFetching && "opacity-60")}><Stat label="apogee" value={fmt(sm.apogee_ft, 0)} unit="ft" cls={isNum(dev) && Math.abs(dev) <= d.tolerance_ft ? "ok" : "warn"} /><Stat label="Δ target" value={signed(dev)} unit="ft" /><Stat label="Δ vs optimizer" value={isNum(sm.apogee_ft) && isNum(r.apogee_ft) ? signed(Math.round(sm.apogee_ft - r.apogee_ft) || 0) : "—"} unit="ft" /><Stat label="Mach @ sep" value={fmt(sm.mach_at_sep, 3)} cls={viol ? "err" : "ok"} /><Stat label="v @ ign" value={fmt(sm.vel_at_ign_fps, 0)} unit="fps" /><Stat label="alt @ ign" value={fmt(sm.alt_at_ign_ft, 0)} unit="ft" /><Stat label="max Mach" value={fmt(sm.max_mach, 3)} /><Stat label="max accel" value={fmt(sm.max_accel_g, 1)} unit="g" /><Stat label="t apogee" value={fmt(sm.t_apogee_s, 1)} unit="s" />{m ? <Stat label="pad weight" value={fmt(m.combined_wt_lb, 1)} unit="lb" sub={`sustainer ${fmt(m.sustainer_wt_lb, 1)} lb loaded`} /> : null}{m && isNum(m.sustainer_dry_lb) && isNum(m.booster_dry_lb) ? <Stat label="dry mass" value={fmt(m.sustainer_dry_lb + m.booster_dry_lb, 1)} unit="lb" sub={`sustainer ${fmt(m.sustainer_dry_lb, 1)} + booster ${fmt(m.booster_dry_lb, 1)}`} /> : null}</StatList>
+      {viol ? <Callout kind="warn"><b>{r.profile} profile violated: </b>{viol}</Callout> : null}
+      <div className="card tight"><div className="mb-2 flex items-center justify-between border-b border-line pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted"><span>Custom flight</span><span className="font-normal normal-case tracking-normal">sep {fmt(sep, 2)} s · ign {fmt(ign, 2)} s{m ? ` · dry ${fmt((m.sustainer_dry_lb ?? 0) + (m.booster_dry_lb ?? 0), 1)} lb` : ""}</span></div><HistoryChart t={fq.data} mode={mode} onMode={setMode} height={340} /></div>
+      {bq.data?.hist ? <div className="card tight"><div className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted">Custom vs optimizer <Select className="h-7 normal-case tracking-normal" value={ov} onChange={(e) => setOv(e.target.value)}><option value="altitude">altitude</option><option value="mach">Mach</option><option value="velocity">velocity</option></Select><span className="font-normal normal-case tracking-normal">dashed = the optimizer's flight{bq.data.kind === "estimated" ? " (estimate)" : ""}</span></div><HistoryOverlay items={[{ name: "optimizer", hist: bq.data.hist, color: PALETTE[1], dash: true }, { name: "custom", hist: fq.data, color: PALETTE[0] }]} mode={ov} /></div> : null}
+      {bq.data?.dz ? <FlightEvents r={cr} dz={bq.data.dz} hist={fq.data} /> : null}
+    </> : fq.isLoading ? <div className="text-muted">Flying…</div> : null}
   </div>;
 }
 

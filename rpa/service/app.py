@@ -168,7 +168,8 @@ def create_app(svc: Service) -> FastAPI:
     @app.get("/api/flight")
     async def flight(request: Request):
         q = request.query_params
-        return J(await anyio.to_thread.run_sync(svc.simulate, q["booster"], q["sustainer"], q.get("profile", ""), float(q["sep"]), float(q["ign"])))
+        mass = float(q["mass"]) if q.get("mass") not in (None, "") else None
+        return J(await anyio.to_thread.run_sync(svc.simulate, q["booster"], q["sustainer"], q.get("profile", ""), float(q["sep"]), float(q["ign"]), mass))
 
     @app.get("/api/job/{name}")
     async def job(name: str):

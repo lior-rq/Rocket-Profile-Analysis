@@ -59,15 +59,13 @@ a trade-space scatter and a starred shortlist that can be compared side by
 side or sent to RASAero together (`rpa confirm --designs ...`). Clicking a
 design draws the vehicle with its staging timeline. Earlier runs are
 snapshotted to `output-archive/` and can be diffed against the current one.
-Full command logs are under `output/gui_logs/` on the Runs & logs page, and
-the VM worker has a page of its own.
+Full command logs are under `output/gui_logs/` on the Runs & logs page.
 
 The command line does the same work:
 
 ```
 python -m rpa check                     # validate the input set
 python -m rpa run                       # every stage, default backend
-python -m rpa run --backend rasaero     # same through the RASAero GUI in the VM (slow)
 python -m rpa run --backend openrocket  # preview through OpenRocket headless
 python -m rpa <motors|mass|characterize|search|verify|report>   # one stage
 ```
@@ -106,10 +104,10 @@ and `--fresh`. `--help` has the rest.
 
 The default, **rasaero_native**, runs RASAero II's own flight-sim and aero
 code headless in child processes. About 20 ms per flight across the cores,
-and the numbers match the VM to 0.0003 %
+and the numbers match the RASAero II GUI to 0.0003 %
 ([native/VALIDATION.md](native/VALIDATION.md)). `rpa aero`, `rpa reference`
-and `rpa confirm` use it too once built (`rasaero.engine: auto`). Build it
-once:
+and `rpa confirm` run on it as well; `rpa confirm --top 5` re-flies the best
+designs and writes `output/confirm.csv`. Build it once:
 
 ```
 brew install dotnet msitools
@@ -128,7 +126,6 @@ agreement with RASAero, which `validate` measures:
 python -m rpa aero                       # Aero Plots tables, once per vehicle revision
 python -m rpa reference --cases 10       # ten RASAero reference flights
 python -m rpa validate                   # compare term by term -> output/validation/
-python -m rpa validate --engine native   # native engine vs VM exports -> output/validation_native/
 ```
 
 `validate` checks the atmosphere, CD lookup, drag reconstruction, weight
@@ -136,11 +133,6 @@ history and flight numbers against the `validation.*` tolerances, and
 recovers RASAero's density profile from the exports (`density_calibration.csv`)
 for the python backend to use. Re-run it whenever the vehicle, the tables or
 the integrator change.
-
-**rasaero** drives the RASAero GUI through the VM worker. It is the fallback
-for table exports, reference flights and the final confirmation
-(`rpa confirm --top 5`, results in `output/confirm.csv`) when the native
-engine is not built. `rasaero.engine: vm` forces it.
 
 **openrocket** is OpenRocket headless. Different aero, previews only.
 
@@ -163,29 +155,17 @@ plus copies of the motors flown (`<name>.booster.eng`, `<name>.sustainer.eng`)
 so a case still reproduces after the motor set changes. `rpa reference`
 writes them.
 
-## The Windows VM
-
-Only needed when the native engine is not built or `rasaero.engine: vm` is
-set. RASAero II is Windows-only and GUI-only, so the pipeline writes job
-folders (`jobs/NNNN-name/` with `job.json` and `input.CDX1`) and waits for
-`result.CDX1`, `export.csv` and `done.json`. Jobs travel through UTM's guest
-agent by default, with a `Z:` share as fallback (`worker.transport`). Inside
-the VM, `worker/rasaero_worker.py` drives RASAero with pywinauto, see
-[worker/README.md](worker/README.md). The GUI's **Start VM worker** button
-boots the VM and launches it. `--worker-mode manual` prints the clicks for
-each job instead and continues once the files appear.
-
 ## Layout
 
 ```
 config.example.yaml   template; copied to config.yaml (git-ignored) on first save
-rpa/                  the pipeline (python -m rpa ...); service/ = FastAPI app, gui/ = state, VM control, yaml edits
+rpa/                  the pipeline (python -m rpa ...); service/ = FastAPI app, gui/ = state and yaml edits
 app/                  desktop app: React UI in src/, Tauri shell in src-tauri/
 native/               RASAero engine host and the patch tool
-worker/               pywinauto worker for the Windows VM
+worker/               legacy: drives the RASAero GUI in a Windows VM, unused since the native engine
 build/                packaging: PyInstaller spec, build_service.*, publish_host.*
 tests/                python -m pytest tests
-input/, output/, jobs/, output-archive/   generated, git-ignored
+input/, output/, output-archive/   generated, git-ignored
 ```
 
 ## Setup from source (Mac)

@@ -1,7 +1,7 @@
 # Install
 
 Rocket Profile Analysis ships as one download per platform from the
-[Releases page](https://github.com/rebigex/rocket-profile-analysis/releases/latest):
+[Releases page](https://github.com/lior-rq/Rocket-Profile-Analysis/releases/latest):
 
 | Platform | File | Notes |
 |---|---|---|

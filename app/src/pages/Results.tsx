@@ -52,7 +52,7 @@ export function ResultsPage() {
   const d = s.results, cfg = s.config;
   const tab = search.tab || "designs";
   const setSearch = (patch: Record<string, unknown>) => nav({ to: "/results", search: { ...search, ...patch } as any });
-  if (!d.n) return <StepPage id="results" summary="Designs, eligibility, characterization, time histories, plots and the written report."><Callout kind="info">No results yet — run the optimizer (step 4).</Callout></StepPage>;
+  if (!d.n) return <StepPage id="results" summary="Designs, eligibility, characterization, time histories, plots and the written report."><Callout kind="info">No results yet — run the optimizer (step 2).</Callout></StepPage>;
   const shortlist: string[] = d.shortlist || [];
   const nElig = d.eligibility ? Object.values(d.eligibility as Record<string, any>).reduce((a: number, v: any) => a + v.eligible, 0) : null;
   const setShortlist = async (body: any) => { try { await api("/api/shortlist", body); await refresh(); } catch (e: any) { toast.error(e.message); } };
@@ -75,10 +75,14 @@ function Star({ k, shortlist, setShortlist }: { k: string; shortlist: string[]; 
   return <button type="button" className={cn("text-[15px] leading-none", on ? "text-warn" : "text-faint hover:text-warn")} title={on ? "remove from the shortlist" : "add to the shortlist"} onClick={(e) => { e.stopPropagation(); setShortlist(on ? { remove: k } : { add: k }); }}>{on ? "★" : "☆"}</button>;
 }
 
+type Filters = { dev: string; mach: string; g: string; vign: string };
+/* Module-level so React keeps the same input mounted across keystrokes. */
+function NumIn({ label, k, ph, title, f, setF }: { label: string; k: keyof Filters; ph: string; title: string; f: Filters; setF: (f: Filters) => void }) { return <label className="inline-flex items-center gap-1 text-[12px]" title={title}>{label}<Input type="number" step="any" className="h-7 w-20" value={f[k]} placeholder={ph} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>; }
+
 function DesignsTab(p: P) {
   const { s, d, cfg, shortlist, setShortlist, search, setSearch } = p;
   const { rows, loading, error } = useDesigns(d);
-  const [f, setF] = useState({ dev: "", mach: "", g: "", vign: "" });
+  const [f, setF] = useState<Filters>({ dev: "", mach: "", g: "", vign: "" });
   const [q, setQ] = useState("");
   const filter = search.filter || "all";
   if (loading) return <div className="text-muted">Loading designs…</div>;
@@ -95,11 +99,10 @@ function DesignsTab(p: P) {
   const selIdx = filtered.findIndex((r: any) => r.key === sel);
   const selRow = selIdx >= 0 ? filtered[selIdx] : rows.find((r: any) => r.key === sel);
   const nav = selRow && selIdx >= 0 ? { prev: selIdx > 0 ? filtered[selIdx - 1] : null, next: selIdx < filtered.length - 1 ? filtered[selIdx + 1] : null, pos: `${selIdx + 1} / ${filtered.length}` } : null;
-  const NumIn = ({ label, k, ph, title }: { label: string; k: keyof typeof f; ph: string; title: string }) => <label className="inline-flex items-center gap-1 text-[12px]" title={title}>{label}<Input type="number" step="any" className="h-7 w-20" value={f[k]} placeholder={ph} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>;
   return <div>
     {selRow ? <DesignDetail r={selRow} nav={nav} {...p} /> : null}
     <div className="mt-4 rounded-md border border-line p-3">
-      <div className="mb-2 flex flex-wrap items-center gap-2"><span className="text-[12px] text-muted">status:</span>{statuses.map((st) => <Button key={st} size="sm" variant={filter === st ? "primary" : "default"} onClick={() => setSearch({ filter: st })}>{st === "all" ? `all (${rows.length})` : `${st} (${rows.filter((r: any) => r.status === st).length})`}</Button>)}<span className="flex-1" /><NumIn label="|Δ target| ≤" k="dev" ph="ft" title="keep designs within this distance of the target" /><NumIn label="M @sep ≥" k="mach" ph="Mach" title="minimum Mach at separation" /><NumIn label="v @ign ≥" k="vign" ph="fps" title="minimum velocity at ignition" /><NumIn label="max g ≤" k="g" ph="g" title="maximum acceleration" /><Input className="h-7 w-[180px]" placeholder="filter boosters…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+      <div className="mb-2 flex flex-wrap items-center gap-2"><span className="text-[12px] text-muted">status:</span>{statuses.map((st) => <Button key={st} size="sm" variant={filter === st ? "primary" : "default"} onClick={() => setSearch({ filter: st })}>{st === "all" ? `all (${rows.length})` : `${st} (${rows.filter((r: any) => r.status === st).length})`}</Button>)}<span className="flex-1" /><NumIn f={f} setF={setF} label="|Δ target| ≤" k="dev" ph="ft" title="keep designs within this distance of the target" /><NumIn f={f} setF={setF} label="M @sep ≥" k="mach" ph="Mach" title="minimum Mach at separation" /><NumIn f={f} setF={setF} label="v @ign ≥" k="vign" ph="fps" title="minimum velocity at ignition" /><NumIn f={f} setF={setF} label="max g ≤" k="g" ph="g" title="maximum acceleration" /><Input className="h-7 w-[180px]" placeholder="filter boosters…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
       <div className="mb-1 text-[12px] text-muted">sorted by distance to target · click a row for details · ★ adds it to the shortlist</div>
       <DataTable columns={["booster", "star", "sustainer", "profile", "status", "sep_delay_s", "ign_delay_s", "apogee_ft", "dev_ft", "apogee_min_delay_ft", "apogee_max_delay_ft", "mach_at_sep", "vel_at_ign_fps", "mach_at_ign", "alt_at_ign_ft", "max_mach", "max_accel_g", "t_apogee_s", "verified_ok", "n_sims"]} rows={filtered.map((r: any) => ({ ...r, star: shortlist.includes(r.key) }))}
         labels={{ star: "★", sep_delay_s: "sep [s]", ign_delay_s: "ign [s]", apogee_ft: "apogee [ft]", dev_ft: "Δ target", apogee_min_delay_ft: "apogee @min ign", apogee_max_delay_ft: "apogee @max ign", mach_at_sep: "M @sep", vel_at_ign_fps: "v @ign [fps]", mach_at_ign: "M @ign", alt_at_ign_ft: "alt @ign", max_mach: "max M", max_accel_g: "max g", t_apogee_s: "t apogee", verified_ok: "verified", n_sims: "sims" }}

@@ -73,7 +73,7 @@ class Service:
         self.state = StateCollector(self.root)
         self.runner = Runner(self.root, self.root / "output" / "gui_runs.json", log_dir=self.root / "output" / "gui_logs")
         self.design = DesignAssets(self.state, self.root)
-        self.allowed_roots = [self.root / "output", self.root / "jobs", self.root / "input"]
+        self.allowed_roots = [self.root / "output", self.root / "input"]
         self.on_quit = None
         self._sig = None
         self._snapshot = None  # (key, dict)
@@ -81,16 +81,7 @@ class Service:
         self._or = None  # ((ork path, mtime_ns), OpenRocket) for on-demand mass rows
         self._or_lock = threading.Lock()
         self._stage_masses: dict[tuple, object] = {}
-        self.vm = None
         self.warmup = {"engine": None, "openrocket": None, "started": time.time(), "done": False}
-        try:
-            from ..gui.vm import VMControl
-
-            cfg = self.state.config()
-            if str((cfg.get("rasaero") or {}).get("engine", "auto")) == "vm" or (cfg.get("vm") or {}).get("utmctl") not in (None, "", "auto"):
-                self.vm = VMControl(cfg.get("vm"), self.root, log=self.runner.note, transport="share")
-        except Exception:
-            self.vm = None
         if watch:
             threading.Thread(target=self._watch, daemon=True, name="rpa-watch").start()
         if warm:
@@ -171,7 +162,7 @@ class Service:
             st["now"] = time.time()
             st["runner"] = cur
             return st
-        st = self.state.collect(self.runner, self.vm)
+        st = self.state.collect(self.runner)
         st["disk"] = self.disk_usage()
         st["engine"] = self.engine_info()
         self._snapshot = (key, st)
@@ -285,35 +276,6 @@ class Service:
         target = (man.get("search") or {}).get("config", {}).get("target.apogee_ft")
         return {"name": name, "columns": list(df.columns), "rows": records(df), "target_ft": target}
 
-    def job_action(self, name: str, action: str) -> dict:
-        import shutil
-
-        if "/" in name or "\\" in name or name.startswith("."):
-            raise PermissionError(name)
-        jobs_dir = self.state.config().path("jobs_dir")
-        d = jobs_dir / name
-        if not d.is_dir():
-            raise FileNotFoundError(name)
-        if action == "reveal":
-            self.reveal(d.relative_to(self.root).as_posix() if self.root in d.parents else str(d))
-            return {"ok": True}
-        info = self.state.job_info(d, brief=True)
-        if action == "discard":
-            if info["state"] not in ("queued", "orphan", "empty"):
-                raise ValueError(f"{name} is {info['state']}; only waiting or orphan jobs can be discarded")
-            dst = jobs_dir / "_discarded" / name
-            dst.parent.mkdir(exist_ok=True)
-            shutil.move(str(d), str(dst))
-            self.runner.note(f"gui: job {name} discarded -> {dst.relative_to(self.root) if self.root in dst.parents else dst}")
-            return {"ok": True, "moved_to": str(dst)}
-        if action == "delete":
-            if info["state"] == "running":
-                raise ValueError(f"{name} is running")
-            shutil.rmtree(d)
-            self.runner.note(f"gui: job {name} deleted")
-            return {"ok": True}
-        raise ValueError(f"unknown job action {action!r}")
-
     def disk_usage(self) -> dict:
         out = self.root / "output"
 
@@ -333,33 +295,19 @@ class Service:
             return n, size
 
         hist = tree(out / "histories")
-        jobs_dir = self.state.config().path("jobs_dir")
-        jobs = tree(jobs_dir)
         sr = out / "search_rows.csv"
         return {
             "histories": {"files": hist[0], "bytes": hist[1], "path": "output/histories"},
-            "jobs": {"files": jobs[0], "bytes": jobs[1], "folders": sum(1 for e in os.scandir(jobs_dir) if e.is_dir()) if jobs_dir.exists() else 0, "path": jobs_dir.relative_to(self.root).as_posix() if self.root in jobs_dir.parents else str(jobs_dir)},
             "search_rows": {"files": int(sr.exists()), "bytes": sr.stat().st_size if sr.exists() else 0, "path": "output/search_rows.csv"},
         }
 
-    def cleanup(self, what: str, older_days: float = 7.0) -> dict:
-        import shutil
-
+    def cleanup(self, what: str) -> dict:
         out = self.root / "output"
         freed = n = 0
         if what == "histories":
             for p in (out / "histories").glob("*.csv") if (out / "histories").exists() else []:
                 freed += p.stat().st_size
                 p.unlink()
-                n += 1
-        elif what == "jobs":
-            jobs_dir = self.state.config().path("jobs_dir")
-            cutoff = time.time() - float(older_days) * 86400
-            for d in sorted(jobs_dir.iterdir()) if jobs_dir.exists() else []:
-                if not d.is_dir() or not (d / "done.json").exists() or d.stat().st_mtime > cutoff:
-                    continue
-                freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                shutil.rmtree(d, ignore_errors=True)
                 n += 1
         elif what == "search_rows":
             p = out / "search_rows.csv"
@@ -374,8 +322,7 @@ class Service:
     # ---- safe paths ---------------------------------------------------------
     def resolve(self, rel: str) -> Path:
         p = (self.root / unquote(rel)).resolve()
-        cfg = self.state.config()
-        roots = [r.resolve() for r in [*self.allowed_roots, cfg.path("reference_dir")]]  # input/ may be a symlink
+        roots = [r.resolve() for r in self.allowed_roots]  # input/ may be a symlink
         if not any(p == r or r in p.parents for r in roots):
             raise PermissionError(rel)
         return p

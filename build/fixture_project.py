@@ -25,7 +25,7 @@ def main() -> None:
     (root / "input" / "x.CDX1").write_text(CDX1)
     (root / "config.yaml").write_text(
         "paths:\n  ork: null\n  cdx1: input/x.CDX1\n  boosters: [input/motors/boosters.eng]\n  sustainers: [input/motors/sus]\n"
-        "target:\n  apogee_ft: 45000\n  tolerance_ft: 100\nbackend: rasaero_native\nnative:\n  warm_start: false\nworker:\n  mode: manual\n"
+        "target:\n  apogee_ft: 45000\n  tolerance_ft: 100\nbackend: rasaero_native\nnative:\n  warm_start: false\n"
     )
     (root / "output" / "boosters.csv").write_text(f"label,designation,file\nB2-02,B2-02,{bfile}\nB1-01,B1-01,{bfile}\n")
     (root / "output" / "sustainers.csv").write_text(f"label,designation,file\n01-S1,S1-01,{sfile}\n")

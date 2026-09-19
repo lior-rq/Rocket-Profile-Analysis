@@ -68,6 +68,7 @@ python -m rpa check                     # validate the input set
 python -m rpa run                       # every stage, default backend
 python -m rpa run --backend openrocket  # preview through OpenRocket headless
 python -m rpa <motors|mass|characterize|search|verify|report>   # one stage
+python -m rpa confirm --top 5           # re-fly the best designs, compare apogees
 ```
 
 Outputs are cached under `output/`. The stages, in order:
@@ -105,9 +106,8 @@ and `--fresh`. `--help` has the rest.
 The default, **rasaero_native**, runs RASAero II's own flight-sim and aero
 code headless in child processes. About 20 ms per flight across the cores,
 and the numbers match the RASAero II GUI to 0.0003 %
-([native/VALIDATION.md](native/VALIDATION.md)). `rpa reference` and
-`rpa confirm` run on it as well; `rpa confirm --top 5` re-flies the best
-designs and writes `output/confirm.csv`. Build it once:
+([native/VALIDATION.md](native/VALIDATION.md)). `rpa confirm --top 5`
+re-flies the best designs and writes `output/confirm.csv`. Build it once:
 
 ```
 brew install dotnet msitools
@@ -117,28 +117,7 @@ dotnet build native/RasaeroHost -c Release
 
 [native/README.md](native/README.md) explains the patch.
 
-**rasaero** drives the RASAero II GUI in a Windows VM through `worker/`.
-Hours instead of seconds; it is the oracle the native engine is checked
-against, not a search backend anyone should need.
-
 **openrocket** is OpenRocket headless. Different aero, previews only.
-
-### Checking the engine
-
-`paths.reference_dir` holds pairs of `<name>.csv` (RASAero *View Data* export
-at 0.01 s) and `<name>.json` (`{"row": <SimRow>, "site": <launch site>}`),
-plus copies of the motors flown (`<name>.booster.eng`, `<name>.sustainer.eng`)
-so a case still reproduces after the motor set changes.
-
-```
-python -m rpa reference --cases 10 --engine vm   # flights exported by the RASAero GUI
-python -m rpa validate                           # fly them natively, compare -> output/validation/
-```
-
-`validate` compares the two histories column by column (Mach, CD, weight,
-thrust, altitude, velocity, drag), the event times and the flight numbers
-against the `validation.*` tolerances. References exported by the native
-engine itself only prove it is deterministic; the check needs VM exports.
 
 ## Layout
 
@@ -147,7 +126,6 @@ config.example.yaml   template; copied to config.yaml (git-ignored) on first sav
 rpa/                  the pipeline (python -m rpa ...); service/ = FastAPI app, gui/ = state and yaml edits
 app/                  desktop app: React UI in src/, Tauri shell in src-tauri/
 native/               RASAero engine host and the patch tool
-worker/               legacy: drives the RASAero GUI in a Windows VM, unused since the native engine
 build/                packaging: PyInstaller spec, build_service.*, publish_host.*
 tests/                python -m pytest tests
 input/, output/, output-archive/   generated, git-ignored

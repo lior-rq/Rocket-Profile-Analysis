@@ -17,8 +17,6 @@ DEFAULTS: dict[str, Any] = {
         "exclude_boosters": [],  # motor labels dropped after loading (single motors inside a multi-motor file)
         "exclude_sustainers": [],
         "output_dir": "output",
-        "jobs_dir": "jobs",
-        "reference_dir": "input/rasaero_reference",
         "rasaero_host": "auto",  # rasaero-host (native/RasaeroHost build); auto = the repo's Release build
         "rasaero_engine": "vendor/rasaero/RASAeroEngine.dll",  # patched RASAero II engine (tools/rasaero_fetch.py)
         "openrocket_jar": "auto",  # auto = the installed OpenRocket (rpa.platform.find_openrocket)
@@ -64,15 +62,11 @@ DEFAULTS: dict[str, Any] = {
     "surface_finish": "Rough Camouflage Paint",
     "rasaero": {
         "engine_name_format": "{designation}  ({manufacturer})",
-        "rows_per_batch": 100,
         "export_time_base_s": 0.01,
-        "altitude_reference": "auto",  # auto | agl | msl - what RASAero's Altitude / MaxAltitude are relative to
         "sustainer_nozzle_in": None,  # null -> from the .eng comment header
         "booster_nozzle_in": None,
-        "mach_alt_via_cdx1": False,  # opt-in: pre-write <MachAlt> instead of the dialog - verify on the VM
-        "engine": "auto",  # where RASAero runs for references and confirm: auto (native if built) | native | vm
     },
-    "native": {  # RASAero's engine in-process (rpa.native): backend rasaero_native / rasaero.engine native
+    "native": {  # RASAero's engine in-process (rpa.native): backend rasaero_native
         "dt_s": 0.01,
         "timeout_s": 600.0,
         "rows_per_batch": 200,
@@ -92,29 +86,11 @@ DEFAULTS: dict[str, Any] = {
             "booster_prop_cg_in": None,
         },
     },
-    "backend": "rasaero_native",  # rasaero_native (RASAero's engine, no VM) | rasaero (VM GUI) | openrocket (preview)
-    # `rpa validate`: the native engine vs VM exports of the same flights
-    "validation": {"apogee_tol_pct": 0.1, "mach_tol": 0.001, "cd_tol_pct": 0.5, "weight_tol_lb": 0.01, "mach_at_burnout_tol": 0.002},
-    "worker": {
-        "mode": "auto",  # auto (VM worker polls jobs/) | manual (you run RASAero by hand)
-        "transport": "auto",  # agent (guest agent) | share (Z: WebDAV); auto picks agent if utmctl found
-        "poll_s": 1.5,
-        "timeout_s": 3600.0,
-        "max_retries": 2,
-        "batch_reference_export": False,  # opt-in: one job for every `rpa reference` flight - verify on the VM first
-    },
+    "backend": "rasaero_native",  # rasaero_native (RASAero's engine) | openrocket (preview)
     "ranking": {"metric": "vel_at_ign_fps", "descending": True},
     "ric": {  # openMotor .ric designs as motor input (cached under output/motors/ric_cache)
         "openmotor": "auto",  # motorlib folder; auto: install, OPENMOTOR_PATH, or sibling vendor/openMotor
         "timestep_s": 0.002,  # openMotor simulation timestep for the thrust curves
-    },
-    "vm": {  # the GUI's "Start VM worker" button (UTM on this Mac: utmctl + guest agent)
-        "name": "Windows",  # UTM virtual machine name
-        "utmctl": "auto",  # path to utmctl, auto = inside /Applications/UTM.app
-        "share_drive": "Z:",  # drive letter of this repo inside the VM
-        "task_name": "RPAWorker",  # name of the Windows task that runs the worker on the desktop (no spaces)
-        "python": "auto",  # python.exe in the VM, auto = the logged-on user's python.org install
-        "boot_timeout_s": 240,
     },
 }
 
@@ -196,7 +172,7 @@ def load_config(path: str | Path | None = None, root: str | Path | None = None, 
     cfg = Config(_merge(_merge(DEFAULTS, data), overrides or {}))
     cfg.root = root
     _normalize_profiles(cfg["profiles"])
-    if cfg["backend"] == "python":  # removed backend (older config.yaml)
+    if cfg["backend"] in ("python", "rasaero"):  # removed backends (older config.yaml)
         cfg["backend"] = "rasaero_native"
     return cfg
 

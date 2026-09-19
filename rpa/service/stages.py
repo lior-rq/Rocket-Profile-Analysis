@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-STAGES = {"check", "reference", "validate", "run", "motors", "mass", "characterize", "search", "verify", "report", "confirm", "inspect"}
-FLAGS = {"--backend", "--engine", "--target", "--tolerance", "--worker-mode", "--boosters", "--limit", "--include-unsolved", "--decel-subsonic", "--fresh", "--cases", "--top", "--designs"}
+STAGES = {"check", "run", "motors", "mass", "characterize", "search", "verify", "report", "confirm"}
+FLAGS = {"--backend", "--target", "--tolerance", "--boosters", "--limit", "--include-unsolved", "--decel-subsonic", "--fresh", "--top", "--designs"}
 
 
 def run_stage(stage: str, args: list[str], root: Path) -> int:

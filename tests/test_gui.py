@@ -35,23 +35,23 @@ target:
 
 launch_site:
   altitude_ft: null       # null = CDX1
-backend: rasaero_native   # rasaero_native | rasaero
+backend: rasaero_native   # rasaero_native | openrocket
 """
 
 
 def test_yamledit_preserves_comments_and_round_trips():
-    out = set_many(CONFIG, {"target.apogee_ft": 44000, "paths.ork": "input/new (1).ork", "launch_site.altitude_ft": 2782, "backend": "rasaero", "target.newkey": [1, 2.5]})
+    out = set_many(CONFIG, {"target.apogee_ft": 44000, "paths.ork": "input/new (1).ork", "launch_site.altitude_ft": 2782, "backend": "openrocket", "target.newkey": [1, 2.5]})
     d = yaml.safe_load(out)
     assert d["target"]["apogee_ft"] == 44000
     assert d["target"]["newkey"] == [1, 2.5]
     assert d["paths"]["ork"] == "input/new (1).ork"
     assert d["paths"]["cdx1"] == "input/x.CDX1"
     assert d["launch_site"]["altitude_ft"] == 2782
-    assert d["backend"] == "rasaero"
-    assert "# top comment" in out and "# the model" in out and "# keep" in out and "# null = CDX1" in out and "# rasaero_native | rasaero" in out
+    assert d["backend"] == "openrocket"
+    assert "# top comment" in out and "# the model" in out and "# keep" in out and "# null = CDX1" in out and "# rasaero_native | openrocket" in out
     # a new top-level section is appended
-    out2 = set_scalar(out, ["worker", "mode"], "manual")
-    assert yaml.safe_load(out2)["worker"]["mode"] == "manual"
+    out2 = set_scalar(out, ["ranking", "metric"], "apogee_ft")
+    assert yaml.safe_load(out2)["ranking"]["metric"] == "apogee_ft"
 
 
 def test_yamledit_rejects_bad_round_trip():
@@ -121,12 +121,8 @@ def test_state_collector_on_empty_project(tmp_path):
     sc = StateCollector(tmp_path)
     s = sc.collect(Runner(tmp_path))
     assert s["inputs"]["status"] == "error" and s["inputs"]["problems"]
-    for k in ("reference", "validate", "optimize", "results", "confirm"):
+    for k in ("optimize", "results", "confirm"):
         assert s[k]["status"] == "todo"
-    from rpa.native import engine_status
-
-    # no VM worker; "online" only when the native engine is built on this machine
-    assert s["worker"]["state"] == ("online" if engine_status(sc.config())["ok"] else "offline")
     assert sc.motor_tree([], []) == {"folders": [], "selected": [], "unknown": []}
     s2 = sc.collect(Runner(tmp_path))
     assert s2["inputs"]["boosters"]["n"] == 0 and s2["inputs"]["boosters"]["problems"]
@@ -347,10 +343,10 @@ def test_manifest_diff_ignores_unrelated_config(tmp_path):
     manifest.write(cfg, "search")
     entry = manifest.read(cfg)["search"]
     assert manifest.diff(entry, manifest.snapshot(cfg, "search")) == []
-    cfg2 = load_config(root=tmp_path, overrides={"target": {"apogee_ft": 40000}, "vm": {"name": "Other"}})
+    cfg2 = load_config(root=tmp_path, overrides={"target": {"apogee_ft": 40000}, "native": {"workers": 2}})
     changes = manifest.diff(entry, manifest.snapshot(cfg2, "search"))
     assert any("target.apogee_ft" in c and "40000" in c for c in changes)
-    assert not any("vm.name" in c for c in changes)
+    assert not any("native.workers" in c for c in changes)
     # a rewrite with identical content is not a change (digests, not mtimes)
     p = tmp_path / "input" / "a b.ork"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -363,7 +359,7 @@ def test_manifest_diff_ignores_unrelated_config(tmp_path):
     assert any("a b.ork" in c for c in manifest.diff(manifest.read(cfg)["mass"], manifest.snapshot(cfg, "mass")))
 
 
-def test_results_shortlist_samples_archives_cleanup_jobs(server):
+def test_results_shortlist_samples_archives_cleanup(server):
     c, root = server
     (root / "output" / "designs_samples.json").write_text(json.dumps({"b1|s|supersonic": [[1.0, 45000.0, 1.0]], "other": [[2.0, 1.0, 1.0]]}))
     assert list(c.get("/api/samples?key=b1%7Cs%7Csupersonic").json()) == ["b1|s|supersonic"]
@@ -371,10 +367,8 @@ def test_results_shortlist_samples_archives_cleanup_jobs(server):
     # shortlist round trip, visible in the state
     assert c.post("/api/shortlist", json={"add": "b1|s|supersonic"}).json()["keys"] == ["b1|s|supersonic"]
     st = c.get("/api/state").json()
-    assert st["results"]["shortlist"] == ["b1|s|supersonic"] and "disk" in st and st["worker"]["n_orphan"] == 0
+    assert st["results"]["shortlist"] == ["b1|s|supersonic"] and "disk" in st
     assert c.post("/api/shortlist", json={"remove": "b1|s|supersonic"}).json()["keys"] == []
-    w = c.get("/api/worker").json()
-    assert "jobs" in w and "current_job" in w
     r = c.get("/api/runs").json()
     assert "history" in r and "runner" in r
     # snapshot of the results and its diff source
@@ -393,14 +387,6 @@ def test_results_shortlist_samples_archives_cleanup_jobs(server):
     assert c.post("/api/cleanup", json={"what": "nope"}).status_code == 400
     # search_rows is no longer served
     assert c.get("/api/table/search_rows").status_code == 404
-    # job actions on a waiting job
-    jd = root / "jobs" / "0001-fake"
-    jd.mkdir(parents=True)
-    (jd / "job.json").write_text('{"name": "fake", "type": "export", "n_rows": 1}')
-    assert c.get("/api/worker").json()["jobs"][0]["state"] == "queued"
-    r = c.post("/api/job/0001-fake", json={"action": "discard"})
-    assert r.status_code == 200 and (root / "jobs" / "_discarded" / "0001-fake").exists()
-    assert c.post("/api/job/0001-fake", json={"action": "delete"}).status_code == 404
     # a run with --designs is accepted by the runner's flag guard
     assert c.post("/api/run", json={"stage": "confirm", "args": ["--designs", "b1|s|supersonic"]}).status_code in (200, 409)
 

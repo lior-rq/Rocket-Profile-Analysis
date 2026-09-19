@@ -3,14 +3,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 output/
-jobs/
 .DS_Store
-worker/console.log
 output-archive/
-worker/heartbeat.json
-worker/worker_status.json
-worker/vm_result.*
-worker/vm_task.log
 *.app/
 *.egg-info/
 build/dist/

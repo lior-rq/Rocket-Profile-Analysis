@@ -15,9 +15,7 @@ def project(tmp_path, motor_dirs, cdx1_file):
     cfg = {
         "paths": {"ork": None, "cdx1": str(cdx1_file), "boosters": [str(p) for p in boosters], "sustainers": [str(p) for p in sustainers], "openrocket_jar": "auto", "jvm": "auto"},
         "backend": "rasaero_native",
-        "rasaero": {"engine": "vm"},
         "native": {"warm_start": False},
-        "worker": {"mode": "manual"},
     }
     import yaml
 
@@ -38,7 +36,7 @@ def test_ping_state_config(client):
     r = c.get("/api/ping")
     assert r.status_code == 200 and r.json()["app"] == "rpa" and r.json()["running"] is False
     st = c.get("/api/state").json()
-    assert {"inputs", "optimize", "results", "worker", "runner", "engine", "disk"} <= set(st)
+    assert {"inputs", "optimize", "results", "runner", "engine", "disk"} <= set(st)
     assert st["inputs"]["boosters"]["n"] == 3
     assert c.get("/api/config").json()["parsed"]["backend"] == "rasaero_native"
     assert c.get("/api/table/designs").json()["missing"] is True

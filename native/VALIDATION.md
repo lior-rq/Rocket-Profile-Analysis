@@ -1,4 +1,8 @@
-# Native engine vs the VM (verified 2026-09-16)
+# Native engine vs the RASAero II GUI (verified 2026-09-16)
+
+Historical record: the GUI side ran in a Windows VM driven by a worker that
+has since been removed. The reference exports it produced are the ones
+tests/test_native.py still checks the engine against.
 
 Same inputs on both sides: `input/RASAero (.CDX1)/RAS_v1.3.CDX1`, the
 staged motor set, config.yaml's launch site and surface finish. The VM side

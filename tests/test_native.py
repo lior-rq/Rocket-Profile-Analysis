@@ -71,7 +71,7 @@ engine_ready = engine_status(_cfg())["ok"] and REF.with_suffix(".json").exists()
 
 
 @pytest.mark.skipif(not engine_ready, reason="RASAero native engine not built, or the reference inputs are missing")
-def test_native_engine_reproduces_the_vm_reference_flight(tmp_path):
+def test_native_engine_reproduces_the_gui_reference_flight(tmp_path):
     cfg = _cfg()
     cfg["paths"]["output_dir"] = str(tmp_path / "out")
     meta = json.loads(REF.with_suffix(".json").read_text())

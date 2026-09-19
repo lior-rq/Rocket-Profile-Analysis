@@ -59,7 +59,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const key = r.running ? `${r.stage}|${r.substage}|${r.round && r.round.round}|${r.progress && r.progress.total}` : null;
         if (key !== subKey.current) { subKey.current = key; setSubStart(r.running ? Date.now() / 1000 : null); }
         if (!r.running && prevRunning.current) {
-          const ok = r.exit_code === 0, findings = r.exit_code === 1 && ["check", "validate"].includes(r.stage || "");
+          const ok = r.exit_code === 0, findings = r.exit_code === 1 && r.stage === "check";
           const msg = `rpa ${r.stage} ${outcomeText(r)} (${dur(r.elapsed_s)})`;
           if (r.cancelled) toast(msg); else if (ok) toast.success(msg); else if (findings) toast.warning(msg); else toast.error(msg, { action: { label: "show log", onClick: () => setActivityOpen(true) } });
         }

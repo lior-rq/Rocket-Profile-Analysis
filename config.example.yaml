@@ -7,8 +7,6 @@ paths:
   boosters: []                    # folders and/or .eng/.ric files; every motor found is a candidate
   sustainers: []                  # same, for sustainer candidates
   output_dir: "output"
-  jobs_dir: "jobs"                # shared with the VM (Z:\jobs)
-  reference_dir: "input/rasaero_reference"   # written by `rpa reference`, read by `rpa validate`
   openrocket_jar: "/Applications/OpenRocket.app/Contents/Resources/app/jar/OpenRocket-24.12.jar"
   jvm: "/Applications/OpenRocket.app/Contents/Resources/jre.bundle/Contents/Home/lib/server/libjvm.dylib"
 
@@ -51,13 +49,9 @@ surface_finish: "Rough Camouflage Paint"
 
 rasaero:
   engine_name_format: "{designation}  ({manufacturer})"   # how RASAero names motors in <Booster1Engine>
-  rows_per_batch: 100
-  export_time_base_s: 0.01
-  altitude_reference: auto        # auto (detect from the first export) | agl | msl
+  export_time_base_s: 0.01        # time history sample step [s]
   sustainer_nozzle_in: null       # null = parse "exit x.xxx in" from the .eng comment header
   booster_nozzle_in: null
-  mach_alt_via_cdx1: false        # opt-in speedup: pre-write <MachAlt> instead of the dialog - verify on the VM first
-  engine: auto                    # where RASAero runs for reference/confirm: auto (native if built) | native | vm
 
 native:                           # RASAero's engine in child processes (native/, rpa/native.py)
   dt_s: 0.01
@@ -79,22 +73,7 @@ mass_model:
     ref_booster_prop_kg: null
     booster_prop_cg_in: null      # axial station (from nose tip) of the booster propellant CG
 
-backend: rasaero_native           # rasaero_native (RASAero's engine, bundled) | rasaero (VM GUI) | openrocket (preview)
-
-validation:                       # `rpa validate`: the native engine vs VM exports of the same flights
-  apogee_tol_pct: 0.1
-  mach_tol: 0.001
-  cd_tol_pct: 0.5
-  weight_tol_lb: 0.01
-  mach_at_burnout_tol: 0.002
-
-worker:
-  mode: auto                      # auto = VM worker polls jobs/ ; manual = you drive RASAero by hand
-  transport: auto                 # agent (guest agent) | share (Z: WebDAV); auto picks agent if utmctl found
-  poll_s: 1.5
-  timeout_s: 3600
-  max_retries: 2
-  batch_reference_export: true   # opt-in speedup: one job for every `rpa reference` flight - verify on the VM first
+backend: rasaero_native           # rasaero_native (RASAero's engine, bundled) | openrocket (preview)
 
 ranking:
   metric: vel_at_ign_fps          # column of designs.csv to rank feasible designs by
@@ -103,11 +82,3 @@ ranking:
 ric:                             # openMotor .ric designs as motor input (cached under output/motors/ric_cache)
   openmotor: auto                 # motorlib folder; auto: install, $OPENMOTOR_PATH, or sibling vendor/openMotor
   timestep_s: 0.002               # openMotor timestep for the thrust curves
-
-vm:                             # GUI "Start VM worker" button: boots the UTM VM and starts the worker inside it
-  name: "Windows"                 # UTM virtual machine name (utmctl list)
-  utmctl: auto                    # path to utmctl; auto = /Applications/UTM.app/Contents/MacOS/utmctl
-  share_drive: "Z:"               # this repo as seen from inside the VM
-  task_name: RPAWorker            # Windows task that runs the worker on the desktop (no spaces)
-  python: auto                    # python.exe in the VM; auto = the logged-on user's python.org install
-  boot_timeout_s: 240

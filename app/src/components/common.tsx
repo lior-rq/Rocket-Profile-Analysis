@@ -67,10 +67,10 @@ export function RunButton({ stage, args = [], label, primary, disabled, title, c
 }
 
 /* options sit beside the buttons; stats get the full width under them. */
-export function ActionPanel({ title, prereqs = [], buttons, options, stats, notes, cmd, vm }: { title?: string; prereqs?: { label: string; ok: boolean | "warn"; hint?: string }[]; buttons?: ReactNode; options?: ReactNode; stats?: ReactNode; notes?: ReactNode; cmd?: ReactNode; vm?: boolean }) {
+export function ActionPanel({ title, prereqs = [], buttons, options, stats, notes, cmd, engine }: { title?: string; prereqs?: { label: string; ok: boolean | "warn"; hint?: string }[]; buttons?: ReactNode; options?: ReactNode; stats?: ReactNode; notes?: ReactNode; cmd?: ReactNode; engine?: boolean }) {
   const missing = prereqs.filter((p) => p.ok === false);
   return <div className="rounded-[var(--radius-card)] border border-accent/30 bg-accent-bg/30 p-4 dark:bg-accent-bg/20">
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div className="text-[13px] font-semibold uppercase tracking-wide text-muted">{title || "Run this step"}{vm ? <Badge status="info" className="ml-2 normal-case tracking-normal">RASAero engine</Badge> : null}</div>
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div className="text-[13px] font-semibold uppercase tracking-wide text-muted">{title || "Run this step"}{engine ? <Badge status="info" className="ml-2 normal-case tracking-normal">RASAero engine</Badge> : null}</div>
       {prereqs.length ? <div className="flex flex-wrap gap-1.5">{prereqs.map((p, i) => <span key={i} title={p.hint || ""} className={cn("rounded-full border px-2 py-[1px] text-[11px]", p.ok === false ? "border-err/40 bg-err-bg text-err" : p.ok === "warn" ? "border-warn/40 bg-warn-bg text-warn" : "border-ok/40 bg-ok-bg text-ok")}>{p.ok === false ? "✗" : p.ok === "warn" ? "!" : "✓"} {p.label}</span>)}</div> : null}</div>
     <div className="flex flex-wrap items-start gap-3"><div className="flex flex-wrap gap-2">{buttons}</div>{options ? <div className="min-w-[260px] flex-1">{options}</div> : null}</div>
     {stats ? <div className="mt-3">{stats}</div> : null}
@@ -103,14 +103,13 @@ export function RunHistory({ hist }: { hist: RunRecord[] }) {
   return <div className="flex flex-col divide-y divide-line">{rows.map((r, i) => <button key={i} type="button" className="flex flex-wrap items-center gap-2 py-1.5 text-left text-[13px] hover:bg-panel-2" onClick={() => nav({ to: "/runs", search: { sel: String(r.started) } as any })}><span className={cn("inline-block h-2.5 w-2.5 rounded-full", failed(r) ? "bg-err" : r.cancelled ? "bg-faint" : r.exit_code === 0 ? "bg-ok" : "bg-warn")} /><span className="font-mono text-[12px]">{["rpa", r.stage, ...(r.args || [])].join(" ")}</span><span className="ml-auto text-[12px] text-muted">{outcomeText(r)} · {dur(r.elapsed_s)} · {dateTime(r.finished)}</span>{failed(r) && r.last_error ? <span className="basis-full text-[12px] text-err truncate">{r.last_error}</span> : null}</button>)}</div>;
 }
 
-export function WorkerCard() {
+export function EngineCard() {
   const { state } = useApp();
   if (!state) return null;
-  const w = state.worker, e = state.engine || {};
-  const cls: Record<string, string> = { busy: "run", online: "ok", idle: "ok", queued: "warn", unresponsive: "err", offline: "err" };
+  const e = state.engine || {};
   return <Card><div className="mb-2 flex items-center justify-between"><h2 className="text-[15px] font-semibold">RASAero engine</h2><Link to="/engine" className="text-[12px] text-accent">details →</Link></div>
-    <div className="flex items-center gap-2"><Badge status={cls[w.state] || "todo"}>{w.state}</Badge><span className="text-[12px] text-muted">{w.detail}</span></div>
-    <KV pairs={[["engine", e.ok ? `native · ${e.pool?.pools?.[0] ? e.pool.pools[0].alive + " host(s) warm" : "ready"}` : e.detail || "—"], ["OpenRocket", e.warmup?.openrocket || (e.openrocket?.jar ? "found" : "not found")], ["mode", w.mode === "auto" ? "auto" : "manual"]]} />
+    <div className="flex items-center gap-2"><Badge status={e.ok ? "ok" : "err"}>{e.ok ? "ready" : "missing"}</Badge><span className="text-[12px] text-muted">{e.ok ? "RASAero's engine, on this machine" : e.detail}</span></div>
+    <KV pairs={[["engine", e.ok ? `native · ${e.pool?.pools?.[0] ? e.pool.pools[0].alive + " host(s) warm" : "ready"}` : e.detail || "—"], ["OpenRocket", e.warmup?.openrocket || (e.openrocket?.jar ? "found" : "not found")]]} />
   </Card>;
 }
 

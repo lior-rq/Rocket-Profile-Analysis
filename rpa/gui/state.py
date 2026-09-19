@@ -1,13 +1,12 @@
 """Everything the browser needs to draw the dashboard, computed from the
-files on disk (config.yaml, the configured inputs, output/, jobs/,
-worker/console.log). Only the motor set is cached; a call takes tens of ms."""
+files on disk (config.yaml, the configured inputs, output/). Only the motor
+set is cached; a call takes tens of ms."""
 
 from __future__ import annotations
 
 import json
 import math
 import os
-import re
 import time
 from pathlib import Path
 
@@ -18,7 +17,7 @@ from ..config import load_config
 from ..eng import expand_motor_sources, parse_eng
 from ..motors import load_motor_set
 
-STEPS = ["inputs", "reference", "validate", "optimize", "results", "confirm"]
+STEPS = ["inputs", "optimize", "results", "confirm"]
 RUN_SUBSTAGES = [
     ("motors", ["boosters.csv", "sustainers.csv", "selected_sustainer.json", "motors/all_motors.eng"]),
     ("mass", ["mass_table.csv"]),
@@ -36,7 +35,6 @@ TABLES = {
     "boosters": "boosters.csv",
     "sustainers": "sustainers.csv",
     "mass_table": "mass_table.csv",
-    "validation": "validation/validation.csv",
 }  # search_rows.csv is deliberately absent: tens of MB, nothing shows it
 
 
@@ -49,15 +47,6 @@ def file_info(p: Path | None, root: Path | None = None) -> dict:
         return {"name": p.name, "path": rel, "exists": True, "mtime": st.st_mtime, "size": st.st_size}
     except OSError:
         return {"name": p.name, "path": rel, "exists": False, "mtime": None, "size": None}
-
-
-def ago_text(seconds: float) -> str:
-    seconds = max(0.0, float(seconds))
-    if seconds < 90:
-        return f"{seconds:.0f}s ago"
-    if seconds < 5400:
-        return f"{seconds / 60:.0f} min ago"
-    return f"{seconds / 3600:.1f} h ago"
 
 
 def _rel(p: Path, root: Path) -> str:
@@ -208,7 +197,7 @@ class StateCollector:
         return {"folders": out, "selected": sorted(selected), "unknown": unknown}
 
     # ---- the big one --------------------------------------------------------
-    def collect(self, runner, vm=None) -> dict:
+    def collect(self, runner) -> dict:
         root = self.root
         cfg = self.config()
         out = cfg.output_dir
@@ -322,57 +311,6 @@ class StateCollector:
             except Exception as e:
                 mass["table"] = {"error": str(e)}
 
-        # reference flights ---------------------------------------------------
-        ref_dir = cfg.path("reference_dir")
-        cases = []
-        if ref_dir.exists():
-            for js in sorted(ref_dir.glob("*.json")):
-                if js.name in ("altitude_offset.json",):
-                    continue
-                csv = js.with_suffix(".csv")
-                if not csv.exists():
-                    continue
-                try:
-                    d = json.loads(js.read_text())
-                    row = d.get("row", {})
-                    cases.append({"name": js.stem, "booster": row.get("booster"), "sustainer": row.get("sustainer"), "sep_delay_s": row.get("sep_delay_s"), "ign_delay_s": row.get("ign_delay_s"), "apogee_ft": row.get("max_alt_ft"), "max_vel_fps": row.get("max_vel_fps"), "mtime": _mtime(csv), "site": d.get("site")})
-                except (OSError, ValueError):
-                    cases.append({"name": js.stem, "error": "unreadable"})
-        ref_mtime = _newest([ref_dir / (c["name"] + ".csv") for c in cases])
-        reference = {
-            "status": "ok" if len(cases) >= 5 else "partial" if cases else "todo",
-            "cases": cases,
-            "n": len(cases),
-            "dir": ref_dir.relative_to(root).as_posix() if root in ref_dir.parents else str(ref_dir),
-            "stale": bool(ref_mtime and (ref_mtime < (_mtime(cdx1) or 0))),
-        }
-
-        # validation ----------------------------------------------------------
-        vfile = out / "validation" / "validation.csv"
-        vinfo = file_info(vfile, root)
-        vrows, n_pass = [], 0
-        if vinfo["exists"]:
-            try:
-                vdf = pd.read_csv(vfile)
-                n_pass = int(vdf["pass"].sum())
-                keep = [c for c in ["case", "booster", "sep_delay_s", "ign_delay_s", "apogee_ref_ft", "apogee_ours_ft", "apogee_err_pct", "mach_burnout_ref", "mach_burnout_ours", "mach_burnout_err", "cd_median_err_pct", "cd_max_abs_err", "altitude_max_abs_err_ft", "velocity_max_abs_err_fps", "mach_max_abs_err", "weight_max_abs_err_lb", "thrust_max_abs_err_lb", "pass", "fail_reasons"] if c in vdf.columns]
-                vrows = records(vdf[keep])
-                for r in vrows:
-                    r["png"] = f"output/validation/{r['case']}.png" if (out / "validation" / f"{r['case']}.png").exists() else None
-            except Exception as e:
-                vrows = [{"error": str(e)}]
-        v_stale = bool(vinfo["exists"] and ref_mtime and vinfo["mtime"] < ref_mtime)
-        validate = {
-            "status": ("stale" if v_stale else "ok" if vrows and n_pass == len(vrows) else "warn" if vrows else "todo") if vinfo["exists"] else "todo",
-            "file": vinfo,
-            "rows": vrows,
-            "n_pass": n_pass,
-            "n": len(vrows),
-            "tolerances": cfg["validation"],
-            "stale": v_stale,
-            "last_run": runner.last_run("validate"),
-        }
-
         # optimize ------------------------------------------------------------
         substages = []
         opt_stale = False
@@ -418,21 +356,15 @@ class StateCollector:
         c_stale = bool(cinfo["exists"] and designs_summary.get("mtime") and cinfo["mtime"] < designs_summary["mtime"])
         confirm = {"status": ("stale" if c_stale else "ok") if crows else "todo", "file": cinfo, "rows": crows, "stale": c_stale, "last_run": runner.last_run("confirm")}
 
-        # worker / jobs (trimmed: the worker page fetches /api/worker) -----------
-        worker = self.worker_status(cfg, vm, n_jobs=20, n_tail=20)
-
         return {
             "now": time.time(),
             "root": str(root),
             "config": dict(cfg),
             "inputs": inputs,
             "mass": mass,
-            "reference": reference,
-            "validate": validate,
             "optimize": optimize,
             "results": {"status": "ok" if designs_summary.get("n") else "todo", **designs_summary},
             "confirm": confirm,
-            "worker": worker,
             "runner": runner.current(),
             "history": runner.history[-30:],
             "plots": [file_info(out / p, root) for p in ["apogee_vs_delay.png", "boost_mach.png", "final_mach_vs_time.png"] if (out / p).exists()],
@@ -554,7 +486,7 @@ class StateCollector:
                 with os.scandir(d) as it:
                     for e in it:
                         if e.is_dir(follow_symlinks=False):
-                            if depth < 1 and e.name in ("validation", "histories", "motors"):
+                            if depth < 1 and e.name in ("histories", "motors"):
                                 scan(Path(e.path), suffixes, depth + 1)
                         elif suffixes is None or e.name.rsplit(".", 1)[-1].lower() in suffixes:
                             try:
@@ -566,8 +498,6 @@ class StateCollector:
                 pass
 
         add(root / "config.yaml")
-        add(root / "worker" / "console.log")
-        add(root / "worker" / "heartbeat.json")
         try:
             cfg = self.config()
             for k in ("ork", "cdx1"):
@@ -579,152 +509,8 @@ class StateCollector:
                         scan(src, {"eng"})
                     else:
                         add(src)
-            scan(cfg.path("reference_dir"), {"csv", "json"})
             scan(cfg.output_dir, {"csv", "json", "md", "png"})
-            jobs = cfg.path("jobs_dir")
-            if jobs.exists():
-                for d in sorted(jobs.iterdir(), reverse=True)[:60]:
-                    for f in ("job.json", "claimed", "done.json"):
-                        add(d / f)
         except Exception as e:
             parts.append(("config-error", str(e), None))
         return hash(tuple(parts))
 
-    # ---- VM worker ----------------------------------------------------------
-    _TS_RE = re.compile(r"^(?:(\d{4}-\d{2}-\d{2}) )?(\d{2}):(\d{2}):(\d{2}) (.*)$")
-
-    def worker_status(self, cfg, vm=None, n_jobs: int = 60, n_tail: int = 60) -> dict:
-        root = self.root
-        log = root / "worker" / "console.log"
-        tail: list[str] = []
-        last_seen = _mtime(log)
-        version = None
-        hb = None
-        try:
-            hb = json.loads((root / "worker" / "heartbeat.json").read_text())
-            hb["age_s"] = round(time.time() - float(hb.get("epoch", 0)), 1)
-        except (OSError, ValueError, TypeError):
-            hb = None
-        alive = bool(hb and hb.get("status") == "running" and hb["age_s"] < 90)  # heartbeat every 15 s; the share is flaky
-        if log.exists():
-            try:
-                with open(log, "rb") as f:
-                    f.seek(0, os.SEEK_END)
-                    size = f.tell()
-                    f.seek(max(0, size - 20000))
-                    tail = f.read().decode("utf-8", "replace").split("\n")[-120:]
-            except OSError:
-                tail = []
-            for ln in reversed(tail):
-                m = re.search(r"worker v(\d+)", ln)
-                if m:
-                    version = int(m.group(1))
-                    break
-        jobs_dir = cfg.path("jobs_dir")
-        # the worker's own view: with the agent transport the claim marker
-        # lives on the VM's disk, so the job in progress comes from here
-        try:
-            ws = json.loads((root / "worker" / "worker_status.json").read_text())
-        except (OSError, ValueError, TypeError):
-            ws = {}
-        current = ws.get("job") if alive and isinstance(ws, dict) else None
-        transport = vm.transport if vm is not None else "share"
-        now = time.time()
-        jobs = []
-        if jobs_dir.exists():
-            for d in sorted(jobs_dir.iterdir(), reverse=True)[:60]:
-                if not d.is_dir() or not re.match(r"^\d{4}-", d.name):
-                    continue
-                j = self.job_info(d, brief=True)
-                age = now - (j["mtime"] or now)
-                if j["state"] == "queued":
-                    if j["name"] == current:
-                        j["state"] = "running"
-                    elif (transport == "agent" and not j["pushed"] and age > 120) or (alive and age > 600):
-                        j["state"] = "orphan"  # nobody will ever claim it
-                jobs.append(j)
-        active = [j for j in jobs if j["state"] == "running"]
-        queued = [j for j in jobs if j["state"] == "queued"]
-        orphans = [j for j in jobs if j["state"] == "orphan"]
-        oldest_queued_age = max((now - (j["mtime"] or now) for j in queued), default=0.0)
-        vm_info = vm.snapshot() if vm is not None else None
-        vm_state = vm_info["status"] if vm_info else None
-        current_job = None
-        if current:
-            started = ws.get("started")
-            current_job = {"name": current, "type": ws.get("type"), "started": started, "elapsed_s": round(now - float(started), 1) if started else None}
-        if active:
-            state, detail = "busy", f"working on {active[0]['name']}" + (f" for {ago_text(current_job['elapsed_s'])[:-4]}" if current_job and current_job["elapsed_s"] is not None else "")
-        elif queued and oldest_queued_age > 45 and not alive:
-            state, detail = "unresponsive", f"{len(queued)} job(s) waiting {oldest_queued_age:.0f}s unclaimed and no heartbeat - the worker is not running"
-        elif queued:
-            state, detail = "queued", f"{len(queued)} job(s) waiting to be claimed"
-        elif alive:
-            state, detail = "online", f"idle, heartbeat {hb['age_s']:.0f}s ago" + (f" (v{version})" if version else "")
-        elif vm_state and vm_state != "started":
-            state, detail = "offline", f"the VM is {vm_state}"
-        elif hb and hb.get("status") == "stopped":
-            state, detail = "offline", f"worker stopped {ago_text(now - float(hb.get('epoch', now)))}"
-        elif hb:
-            state, detail = "offline", f"no heartbeat for {ago_text(hb['age_s'])}"
-        elif last_seen and now - last_seen < 120:
-            state, detail = "online", f"activity {ago_text(now - last_seen)} (older launcher without heartbeat)"
-        else:
-            state, detail = "offline", ("no heartbeat - start the worker" if last_seen else "never started")
-        engine = None
-        if cfg["backend"] == "rasaero_native" or str(cfg["rasaero"].get("engine", "auto")) != "vm":
-            from .. import native
-
-            engine = native.engine_status(cfg)
-            if engine["ok"] and (cfg["backend"] == "rasaero_native" or not active and not queued):
-                state, detail = "online", "RASAero engine (native, no VM needed)"
-            elif not engine["ok"] and cfg["backend"] == "rasaero_native":
-                state, detail = "offline", "RASAero native engine: " + engine["detail"]
-        return {"state": state, "detail": detail, "last_seen": last_seen, "version": version, "heartbeat": hb, "alive": alive, "vm": vm_info, "transport": transport, "current_job": current_job, "console_tail": tail[-n_tail:], "jobs": jobs[:n_jobs], "n_jobs": len(jobs), "n_queued": len(queued), "n_active": len(active), "n_orphan": len(orphans), "jobs_dir": jobs_dir.relative_to(root).as_posix() if root in jobs_dir.parents else str(jobs_dir), "mode": cfg["worker"]["mode"], "engine": engine}
-
-    def job_info(self, d: Path, brief: bool = False) -> dict:
-        spec, done = {}, None
-        try:
-            spec = json.loads((d / "job.json").read_text())
-        except (OSError, ValueError):
-            pass
-        try:
-            done = json.loads((d / "done.json").read_text()) if (d / "done.json").exists() else None
-        except (OSError, ValueError):
-            done = {"status": "unreadable"}
-        claimed = (d / "claimed").exists()
-        if done:
-            state = "ok" if done.get("status") == "ok" else "failed"
-        elif claimed:
-            state = "running"
-        elif spec:
-            state = "queued"
-        else:
-            state = "empty"
-        claimed_at = None
-        if claimed:
-            try:
-                claimed_at = (d / "claimed").read_text().strip()
-            except OSError:
-                pass
-        info = {
-            "name": d.name,
-            "type": spec.get("type"),
-            "n_rows": spec.get("n_rows"),
-            "created": spec.get("created"),
-            "state": state,
-            "claimed_at": claimed_at,
-            "pushed": (d / "pushed").exists(),
-            "done": done,
-            "mtime": _mtime(d / "job.json"),
-            "has_result": (d / spec.get("result_cdx1", "result.CDX1")).exists() if spec else False,
-            "has_export": bool(spec.get("export_csv")) and (d / spec["export_csv"]).exists() if spec else False,
-            "n_png": len(list(d.glob("*.png"))),
-        }
-        if not brief:
-            info["spec"] = spec
-            info["files"] = [file_info(p, self.root) for p in sorted(d.iterdir())]
-            wl = d / "worker.log"
-            info["worker_log"] = wl.read_text(errors="replace").split("\n")[-400:] if wl.exists() else []
-            info["images"] = [p.relative_to(self.root).as_posix() for p in sorted(d.glob("*.png"))]
-        return info

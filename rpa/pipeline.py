@@ -13,8 +13,7 @@ import pandas as pd
 
 from . import cdx1, manifest
 from . import history as H
-from .backends import OpenRocketBackend, RASAeroBackend, SimBackend
-from .jobs import INSPECT, JobClient
+from .backends import OpenRocketBackend, SimBackend
 from .models import SUBSONIC, SUPERSONIC, Characterization, Design, MassRow, ProfileEligibility, SimRow
 from .motors import MotorSet, load_motor_set, motor_table, pick_spanning, stage_motor_files, staged_motors, staged_motors_current
 from .openrocket import KG_TO_LB, OpenRocket
@@ -215,30 +214,15 @@ class Pipeline:
 
     def backend(self) -> SimBackend:
         if self._backend is None:
-            motor_dir, motor_file = self.motor_paths()
             if self.cfg["backend"] == "openrocket":
                 b = OpenRocketBackend(self.cfg, self.openrocket(), self.ms, log=log)
                 b.set_site_defaults(self.site)
                 self._backend = b
             elif self.cfg["backend"] == "rasaero_native":
                 self._backend = self.native_backend()
-            elif self.cfg["backend"] == "rasaero":
-                self._backend = RASAeroBackend(self.cfg, self.template, motor_file, motor_dir, self.jobs(), log=log)
             else:
-                raise ValueError(f"backend must be rasaero_native | rasaero | openrocket, not {self.cfg['backend']!r}")
+                raise ValueError(f"backend must be rasaero_native | openrocket, not {self.cfg['backend']!r}")
         return self._backend
-
-    def rasaero_engine(self) -> str:
-        """'native' or 'vm': where RASAero itself runs (rasaero.engine)."""
-        from .native import engine_status
-
-        want = str(self.cfg["rasaero"].get("engine", "auto"))
-        if want == "vm":
-            return "vm"
-        st = engine_status(self.cfg)
-        if want == "native" and not st["ok"]:
-            raise FileNotFoundError("rasaero.engine is 'native' but " + st["detail"])
-        return "native" if st["ok"] else "vm"
 
     def native_backend(self, motor_files=None, log=log):
         """RASAero's engine in a child process, flying this CDX1 with the
@@ -252,43 +236,11 @@ class Pipeline:
             return shared_backend(self.cfg, self.cfg.path("cdx1"), motor_files, self.site, self.cfg["surface_finish"], log=log)
         return NativeRASAeroBackend(self.cfg, self.cfg.path("cdx1"), motor_files, self.site, self.cfg["surface_finish"], log=log)
 
-    def rasaero_backend(self, log=log):
-        """The backend that runs RASAero for references and confirm: native
-        when available, else the VM worker."""
-        if self.rasaero_engine() == "native":
-            return self.native_backend(log=log)
-        motor_dir, motor_file = self.motor_paths()
-        return RASAeroBackend(self.cfg, self.template, motor_file, motor_dir, self.jobs(), log=log)
-
     def close(self):
         """Release the backend's host processes (no-op otherwise)."""
         be = self._backend
         if be is not None and hasattr(be, "close"):
             be.close()
-
-    def jobs(self) -> JobClient:
-        """The job client for the VM worker, with the configured transport."""
-        if getattr(self, "_jobs", None) is None:
-            w = self.cfg["worker"]
-            transport = str(w.get("transport", "auto"))
-            agent = None
-            if transport in ("auto", "agent") and w["mode"] == "auto":
-                from .vmagent import GuestAgent
-
-                vm = self.cfg.get("vm") or {}
-                cand = GuestAgent(vm.get("name", "Windows"), vm.get("utmctl", "auto"))
-                if cand.available and (transport == "agent" or cand.status(0) is not None):
-                    agent, transport = cand, "agent"
-                elif transport == "agent":
-                    raise RuntimeError("worker.transport is 'agent' but utmctl / the VM was not found (config vm.name / vm.utmctl)")
-                else:
-                    transport = "share"
-            elif transport == "auto":
-                transport = "share"
-            self._jobs = JobClient(self.cfg.path("jobs_dir"), self.cfg.root, mode=w["mode"], poll_s=w["poll_s"], timeout_s=w["timeout_s"], log=log, transport=transport, agent=agent, guest_root=(self.cfg.get("vm") or {}).get("guest_root") or r"C:\rpa")
-            if w["mode"] == "auto":
-                log(f"  VM jobs via the {self._jobs.transport} transport" + (f" (UTM '{agent.vm}', jobs in {self._jobs.guest_root}\\jobs)" if agent else " (Z: share)"))
-        return self._jobs
 
     def motor_paths(self) -> tuple[Path, Path]:
         d = self.out / "motors"
@@ -298,24 +250,6 @@ class Pipeline:
                 log("motors: input motor set changed since the last staging - re-staging")
             self.stage_motors()
         return d, f
-
-    # ---- VM GUI inspection (bring-up aid) ----------------------------------
-    def inspect_rasaero(self, try_view_data: bool = True) -> Path:
-        """Ask the VM worker to photograph RASAero's windows and menus and dump
-        their control trees into a job folder, so the GUI automation can be
-        mapped without touching the VM."""
-        motor_dir, motor_file = self.motor_paths()
-        jobs = self.jobs()
-        job = jobs.create("inspect", INSPECT, motor_file=motor_file, motor_dir=motor_dir, n_rows=1, extra={"try_view_data": try_view_data})
-        b0 = self.ms.boosters[0]
-        cdx1.write_batch(self.template, [make_row(b0.label, None, 15.0, 15.0, self.ms, self.load_mass()[(b0.label, self.sustainers[0].label)], self.cfg)], job.input_cdx1, launch_site_overrides={k: v for k, v in self.cfg["launch_site"].items() if v is not None}, surface=self.cfg["surface_finish"])
-        jobs.submit(job)
-        try:
-            jobs.wait(job)
-        except RuntimeError as e:
-            log(f"  inspection ended with an error (partial output is still useful): {e}")
-        log(f"inspection output in {job.dir}: " + ", ".join(sorted(p.name for p in job.dir.iterdir())))
-        return job.dir
 
     # ---- input check -------------------------------------------------------
     def check(self) -> list[str]:
@@ -348,121 +282,23 @@ class Pipeline:
         from .native import engine_status
 
         st = engine_status(self.cfg)
-        log(f"  RASAero engine: {'native (' + str(st['engine']) + ')' if st['ok'] else 'VM (' + st['detail'] + ')'}")
+        log(f"  RASAero engine: {st['engine'] if st['ok'] else 'missing (' + st['detail'] + ')'}")
         if self.cfg["backend"] == "rasaero_native" and not st["ok"]:
             problems.append("backend rasaero_native: " + st["detail"])
-        elif self.cfg["backend"] not in ("rasaero_native", "rasaero", "openrocket"):
-            problems.append(f"backend must be rasaero_native | rasaero | openrocket, not {self.cfg['backend']!r}")
+        elif self.cfg["backend"] not in ("rasaero_native", "openrocket"):
+            problems.append(f"backend must be rasaero_native | openrocket, not {self.cfg['backend']!r}")
         for pr in problems:
             log(f"  !! {pr}")
         if not problems:
             log("  OK")
         return problems
 
-    # ---- RASAero reference cases + validation of the native engine ---------
-    def reference_rows(self, n_cases: int) -> list[SimRow]:
-        """A spread of (booster, sustainer, delays) covering short and long
-        coasts and every searched sustainer."""
-        ms = self.ms
-        mass = self.load_mass()
-        sus = self.sustainers
-        c = self.cfg["characterization"]
-        delays = [(c["separation_delay_s"], c["ignition_delay_s"]), (1.0, 3.0), (0.0, 8.0), (1.0, 12.0), (0.5, 5.0)]
-        rows = []
-        i = 0
-        while len(rows) < n_cases:
-            b = ms.boosters[(i * max(1, len(ms.boosters) // max(1, min(n_cases, len(ms.boosters))))) % len(ms.boosters)]
-            s = sus[(i + i // len(delays)) % len(sus)]  # offset so a sustainer is not always paired with the same delays
-            sep, ign = delays[i % len(delays)]
-            rows.append(make_row(b.label, None, sep, ign, ms, mass[(b.label, s.label)], self.cfg))
-            i += 1
-        return rows
-
-    def stage_reference(self, n_cases: int = 10) -> list[Path]:
-        """Export reference flights through the RASAero backend (VM worker).
-        Clears every ref* case from a previous run first - a stale case left
-        over from an earlier --cases N or motor-set swap would otherwise sit
-        alongside the new ones and get picked up by `rpa validate`."""
-        from .validate import save_case
-
-        be = self.rasaero_backend()
-        ref_dir = self.cfg.path("reference_dir")
-        old = [p for d in (ref_dir, be.history_dir) if d.exists() for p in d.glob("ref[0-9]*")]
-        for p in old:
-            p.unlink()
-        if old:
-            log(f"reference: cleared {len(old)} file(s) from previous case(s)")
-        made = []
-        rows = self.reference_rows(n_cases)
-        many = len(self.sustainers) > 1
-        names = [f"ref{i + 1:02d}-{row.booster}" + (f"+{row.sustainer}" if many else "") + f"-sep{row.sep_delay_s:g}-ign{row.ign_delay_s:g}" for i, row in enumerate(rows)]
-
-        def keep(row, name):
-            job_csv = be.history_dir / (name + ".csv")
-            made.append(save_case(ref_dir, name, job_csv, row, self.site, booster=self.ms.booster(row.booster), sustainer=self.ms.sustainer_by_label(row.sustainer)))
-
-        # opt-in (worker.batch_reference_export): one Rerun All for every row
-        # instead of one job per flight - needs a live check on the VM
-        # before it replaces the per-flight path by default.
-        batched = bool(self.cfg["worker"].get("batch_reference_export")) and len(rows) > 1 and isinstance(be, RASAeroBackend)
-        if batched:
-            log(f"reference: exporting {len(rows)} RASAero flights (batched) into {ref_dir}")
-            try:
-                histories = be.export_batch(rows, names)
-            except Exception as e:  # noqa: BLE001 - any batch failure falls back to the per-flight path
-                log(f"reference: batched export failed: {e}")
-                log("reference: falling back to one job per flight (set worker.batch_reference_export: false to skip the batched attempt)")
-                batched = False
-            else:
-                for row, name, h in zip(rows, names, histories, strict=True):
-                    if h is None or row.max_alt_ft is None:
-                        log(f"  {name}: skipped (no result)")
-                        continue
-                    keep(row, name)
-                    log(f"  {name}: apogee {row.max_alt_ft:.0f} ft")
-        if not batched:
-            log(f"reference: exporting {len(rows)} RASAero flights into {ref_dir}")
-            for i, (row, name) in enumerate(zip(rows, names, strict=True)):
-                be.export(row, name)
-                keep(row, name)
-                log(f"  [{i + 1}/{len(rows)}] {name}: apogee {row.max_alt_ft:.0f} ft")
-        (ref_dir / "altitude_offset.json").write_text(json.dumps({"offset_ft": be.alt_offset_ft or 0.0}))
-        if hasattr(be, "close"):
-            be.close()
-        return made
-
-    def stage_validate(self) -> pd.DataFrame:
-        """Fly the RASAero reference exports on the native engine and compare
-        (native/VALIDATION.md). Meaningful with VM exports (`rpa reference
-        --engine vm`); native-made references only prove determinism."""
-        from .validate import load_cases, run_validation
-
-        ref_dir = self.cfg.path("reference_dir")
-        cases = load_cases(ref_dir)
-        if not cases:
-            raise FileNotFoundError(f"no reference cases (<name>.csv + <name>.json) in {ref_dir}")
-        offset = 0.0
-        if (ref_dir / "altitude_offset.json").exists():
-            offset = float(json.loads((ref_dir / "altitude_offset.json").read_text())["offset_ft"])
-        be = self.native_backend(motor_files=[])
-        out_dir = self.out / "validation"
-        log(f"validate: {len(cases)} case(s) vs RASAero native engine; tolerances {self.cfg['validation']}")
-        try:
-            df = run_validation(cases, be, self.cfg["validation"], out_dir, alt_offset_ft=offset, log=log)
-        finally:
-            if hasattr(be, "close"):
-                be.close()
-        n_ok = int(df["pass"].sum())
-        log(f"  {n_ok}/{len(df)} passed; details in {out_dir}")
-        return df
-
     # ---- final confirmation of chosen designs in RASAero itself ------------
     def stage_confirm(self, top_n: int = 5, include_unsolved: bool = False, designs: list[str] | None = None) -> pd.DataFrame:
-        """Re-run the chosen designs through RASAero (the native engine, or
-        one batched CDX1 via the VM worker) and compare its apogee with the
-        optimizer's. `designs`:
-        explicit keys (booster|sustainer|profile, e.g. the GUI shortlist)
-        instead of the `top_n` closest to the target."""
+        """Re-fly the chosen designs through the RASAero engine and compare
+        its apogee with the optimizer's. `designs`: explicit keys
+        (booster|sustainer|profile, e.g. the GUI shortlist) instead of the
+        `top_n` closest to the target."""
         all_designs = self.load_designs()
         mass = self.load_mass()
         if designs:
@@ -480,11 +316,10 @@ class Pipeline:
                 return pd.DataFrame()
             todo = sorted(todo, key=lambda d: abs(d.apogee_ft - self.cfg["target"]["apogee_ft"]))[:top_n]
         rows = [make_row(d.booster, d.profile, d.sep_delay_s, d.ign_delay_s, self.ms, mass[(d.booster, d.sustainer)], self.cfg) for d in todo]
-        be = self.rasaero_backend()
+        be = self.native_backend()
         log(f"confirm: {len(rows)} design(s) through RASAero ({be.name})")
         be.run_batch(rows, "confirm")
-        if hasattr(be, "close"):
-            be.close()
+        be.close()
         recs = []
         for d, r in zip(todo, rows, strict=False):
             recs.append({"booster": d.booster, "sustainer": d.sustainer, "profile": d.profile, "sep_delay_s": d.sep_delay_s, "ign_delay_s": d.ign_delay_s, "apogee_search_ft": d.apogee_ft, "apogee_rasaero_ft": r.max_alt_ft, "diff_ft": (r.max_alt_ft - d.apogee_ft) if r.max_alt_ft is not None else None, "diff_pct": (100.0 * (r.max_alt_ft - d.apogee_ft) / d.apogee_ft) if r.max_alt_ft is not None else None, "max_vel_rasaero_fps": r.max_vel_fps, "t_apogee_rasaero_s": r.t_apogee_s})

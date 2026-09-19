@@ -25,15 +25,15 @@ function NavItem({ to, num, title, sub, status, active }: { to: string; num: Rea
 export function Sidebar() {
   const { state } = useApp();
   const path = useRouterState({ select: (s) => s.location.pathname });
-  const w = state?.worker, e = state?.engine;
+  const e = state?.engine;
   const last = state?.history?.length ? state.history[state.history.length - 1] : null;
-  const lastBad = last && last.exit_code !== 0 && !last.cancelled && !(last.exit_code === 1 && ["check", "validate"].includes(last.stage));
+  const lastBad = last && last.exit_code !== 0 && !last.cancelled && !(last.exit_code === 1 && last.stage === "check");
   return <nav className="flex h-full w-[260px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line bg-panel px-2 py-3">
     <NavItem to="/" num={<Home className="h-3.5 w-3.5" />} title="Overview" sub="status & next action" active={path === "/"} />
     <div className="mt-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-faint">Step by step</div>
     {STEPS.map((st) => { const s = stepStatus(state, st.id); return <NavItem key={st.id} to={st.path} num={st.n} title={st.title} sub={s === "running" ? "running…" : (STATUS_TEXT[s] || s) + " · " + st.sub} status={s} active={path.startsWith(st.path)} />; })}
     <div className="mt-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-faint">Infrastructure</div>
-    <NavItem to="/engine" num={<Cpu className="h-3.5 w-3.5" />} title="Engine" sub={e ? (e.ok ? `native · ${e.pool?.pools?.[0]?.alive ?? 0} hosts warm` : e.detail) : w ? `${w.state} · ${w.detail}` : ""} status={e?.ok ? "ok" : "error"} active={path === "/engine"} />
+    <NavItem to="/engine" num={<Cpu className="h-3.5 w-3.5" />} title="Engine" sub={e ? (e.ok ? `native · ${e.pool?.pools?.[0]?.alive ?? 0} hosts warm` : e.detail) : ""} status={e?.ok ? "ok" : "error"} active={path === "/engine"} />
     <NavItem to="/runs" num={<History className="h-3.5 w-3.5" />} title="Runs & logs" sub={last ? `last: rpa ${last.stage} ${outcomeText(last)}` : "logs and result snapshots"} status={lastBad ? "error" : "todo"} active={path === "/runs"} />
     <NavItem to="/settings" num={<Settings className="h-3.5 w-3.5" />} title="Settings" sub="config.yaml" status="todo" active={path === "/settings"} />
     <div className="mt-auto px-2 pt-3 text-[11px] text-faint"><ListChecks className="mr-1 inline h-3 w-3" />{state?.root ? state.root.split(/[\\/]/).slice(-1)[0] : "…"}</div>

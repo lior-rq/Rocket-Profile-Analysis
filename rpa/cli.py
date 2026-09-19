@@ -17,20 +17,17 @@ STAGES = ["motors", "mass", "characterize", "search", "verify", "report"]
 
 def build_parser():
     ap = argparse.ArgumentParser(prog="rpa", description="Two-stage flight profile optimizer (OpenRocket + RASAero II)")
-    ap.add_argument("stage", choices=[*STAGES, "run", "check", "reference", "validate", "confirm", "inspect", "gui", "service"], help="pipeline stage; 'run' = all stages in order; 'check' = validate the input set; 'reference' = export RASAero reference flights; 'validate' = fly them on the native engine and compare; 'inspect' = map RASAero's GUI via the VM worker; 'gui' = open the local web GUI")
+    ap.add_argument("stage", choices=[*STAGES, "run", "check", "confirm", "gui", "service"], help="pipeline stage; 'run' = all stages in order; 'check' = validate the input set; 'confirm' = re-fly the chosen designs; 'gui' = open the local web GUI")
     ap.add_argument("--config", default=None, help="config.yaml path (default: ./config.yaml)")
     ap.add_argument("--root", default=None, help="repo root (default: cwd)")
-    ap.add_argument("--backend", choices=["rasaero_native", "rasaero", "openrocket"], default=None, help="override backend")
-    ap.add_argument("--engine", choices=["auto", "native", "vm"], default=None, help="where RASAero runs for reference/confirm (rasaero.engine)")
+    ap.add_argument("--backend", choices=["rasaero_native", "openrocket"], default=None, help="override backend")
     ap.add_argument("--target", type=float, default=None, help="target apogee [ft]")
     ap.add_argument("--tolerance", type=float, default=None, help="apogee tolerance [ft]")
-    ap.add_argument("--worker-mode", choices=["auto", "manual"], default=None)
     ap.add_argument("--boosters", default=None, help="comma-separated booster labels or 1-based indices to restrict to (testing)")
     ap.add_argument("--limit", type=int, default=None, help="only the first N boosters (testing)")
     ap.add_argument("--include-unsolved", action="store_true", help="verify: also export unsolved/over/underpowered designs")
     ap.add_argument("--decel-subsonic", action="store_true", help="also consider the optional 'coast attached below Mach 0.9, then separate' variant")
     ap.add_argument("--fresh", action="store_true", help="ignore cached stage outputs (re-runs everything for 'run')")
-    ap.add_argument("--cases", type=int, default=10, help="reference: number of RASAero reference flights to export")
     ap.add_argument("--top", type=int, default=5, help="confirm: how many designs (closest to target) to re-run in RASAero")
     ap.add_argument("--designs", default=None, help="confirm: comma-separated design keys booster|sustainer|profile (the GUI shortlist) instead of --top")
     ap.add_argument("--port", type=int, default=8765, help="gui/service: local port (default 8765; 0 = any free port)")
@@ -48,8 +45,8 @@ def main(argv=None):
 
 
 def run(argv=None) -> int:
-    """The command line as a function: 0 ok, 1 findings (check/validate),
-    2 usage or error. The app service calls this in a thread."""
+    """The command line as a function: 0 ok, 1 findings (check), 2 usage or
+    error. The app service calls this in a thread."""
     args = build_parser().parse_args(argv)
     if args.stage in ("gui", "service"):
         from .service.app import serve
@@ -71,10 +68,6 @@ def run(argv=None) -> int:
         over["backend"] = args.backend
     if args.target is not None or args.tolerance is not None:
         over["target"] = {k: v for k, v in [("apogee_ft", args.target), ("tolerance_ft", args.tolerance)] if v is not None}
-    if args.worker_mode:
-        over["worker"] = {"mode": args.worker_mode}
-    if args.engine:
-        over["rasaero"] = {"engine": args.engine}
     if args.decel_subsonic:
         over["profiles"] = {"include_decel_subsonic": True}
     cfg = load_config(args.config, root=args.root, overrides=over)
@@ -97,9 +90,6 @@ def run(argv=None) -> int:
         ms.boosters = sel
         log(f"restricted to {len(sel)} booster(s): {', '.join(b.label for b in sel)}")
 
-    if args.stage == "inspect":
-        pipe.inspect_rasaero()
-        return 0
     if args.stage == "check":
         problems = pipe.check()
         manifest.write(cfg, "check", problems=len(problems))
@@ -107,12 +97,6 @@ def run(argv=None) -> int:
     if args.stage == "confirm":
         pipe.stage_confirm(top_n=args.top, include_unsolved=args.include_unsolved, designs=[k.strip() for k in args.designs.split(",") if k.strip()] if args.designs else None)
         return 0
-    if args.stage == "reference":
-        pipe.stage_reference(args.cases)
-        return 0
-    if args.stage == "validate":
-        df = pipe.stage_validate()
-        return 0 if bool(df["pass"].all()) else 1
     stages = STAGES if args.stage == "run" else [args.stage]
     try:
         run_stages(pipe, cfg, stages, args)

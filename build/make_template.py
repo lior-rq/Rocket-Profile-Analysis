@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Assemble build/template/ (the first project a fresh install gets) from the
-repo's config.yaml and input/: motor files, the .ork and .CDX1; with --full
-also the reference flights (regenerable in the app).
+repo's config.yaml and input/: motor files, the .ork and .CDX1.
 Paths in the copied config.yaml stay relative, so the template works
 wherever it is copied. Without a config.yaml (CI, a fresh checkout) the
 template is config.example.yaml with an empty input/: the user picks files."""
@@ -38,7 +37,7 @@ def main() -> None:
     DST.mkdir(parents=True)
     if not (ROOT / "config.yaml").exists() or "--generic" in sys.argv[1:]:
         shutil.copy2(ROOT / "config.example.yaml", DST / "config.yaml")
-        for d in ("input", "output", "jobs"):
+        for d in ("input", "output"):
             (DST / d).mkdir()
         print(f"template: generic (config.example.yaml, no inputs) -> {DST}")
         return
@@ -58,12 +57,7 @@ def main() -> None:
                 continue
             rel = src.relative_to(ROOT) if ROOT in src.parents else Path("input") / src.name
             n += copy_tree(src, DST / rel) if src.is_dir() else (shutil.copy2(src, (DST / rel).parent.mkdir(parents=True, exist_ok=True) or DST / rel) and 1)
-    if "--full" in sys.argv[1:]:
-        d = cfg.path("reference_dir")
-        if d.exists():
-            n += copy_tree(d, DST / d.relative_to(ROOT))
     (DST / "output").mkdir()
-    (DST / "jobs").mkdir()
     size = sum(p.stat().st_size for p in DST.rglob("*") if p.is_file())
     print(f"template: {n} files, {size / 1048576:.1f} MB -> {DST}")
 

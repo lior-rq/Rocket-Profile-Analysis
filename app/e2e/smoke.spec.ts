@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const ROUTES = ["/", "/inputs", "/inputs?tab=motors", "/inputs?tab=mass", "/inputs?tab=target", "/aero", "/reference", "/validate", "/optimize", "/results", "/results?tab=matrix", "/results?tab=tradespace", "/results?tab=shortlist", "/results?tab=eligibility", "/results?tab=characterization", "/results?tab=plots", "/results?tab=previous", "/results?tab=report", "/confirm", "/runs", "/engine", "/settings", "/setup"];
+const ROUTES = ["/", "/inputs", "/inputs?tab=motors", "/inputs?tab=mass", "/inputs?tab=target", "/optimize", "/results", "/results?tab=matrix", "/results?tab=tradespace", "/results?tab=shortlist", "/results?tab=customize", "/results?tab=eligibility", "/results?tab=characterization", "/results?tab=plots", "/results?tab=previous", "/results?tab=report", "/confirm", "/runs", "/engine", "/settings", "/setup"];
 
 async function collectErrors(page: Page) {
   const errors: string[] = [];

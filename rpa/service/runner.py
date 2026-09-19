@@ -27,7 +27,7 @@ _SUBSTAGE_RE = re.compile(r"^=== (\w+) ===$")
 _ROUND_RE = re.compile(r"^\s*round (\w+): (\d+) (?:rows|refinement rows)")
 _ERROR_RE = re.compile(r"^(Traceback|\w*Error:|\w*Exception:)")
 
-FINDINGS_STAGES = {"check", "validate"}  # exit code 1 = "reported problems", not a crash
+FINDINGS_STAGES = {"check"}  # exit code 1 = "reported problems", not a crash
 LIGHT_STAGES = {"check", "report"}  # may run beside a long stage
 MAX_LINES = 8000
 MAX_HISTORY = 200

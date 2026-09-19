@@ -104,10 +104,6 @@ def create_app(svc: Service) -> FastAPI:
     async def setup():
         return J(await anyio.to_thread.run_sync(svc.setup_info))
 
-    @app.get("/api/vm/guest")
-    async def vm_guest():
-        return J(svc.vm.guest_status() if svc.vm else {"available": False})
-
     @app.get("/api/config")
     async def config_get():
         return J(svc.config_payload())
@@ -152,10 +148,6 @@ def create_app(svc: Service) -> FastAPI:
     async def archive_get(request: Request):
         return J(svc.archive_designs(request.query_params["name"]))
 
-    @app.get("/api/worker")
-    async def worker():
-        return J(await anyio.to_thread.run_sync(lambda: svc.state.worker_status(svc.state.config(), svc.vm)))
-
     @app.get("/api/disk")
     async def disk():
         return J(svc.disk_usage())
@@ -170,11 +162,6 @@ def create_app(svc: Service) -> FastAPI:
         q = request.query_params
         mass = float(q["mass"]) if q.get("mass") not in (None, "") else None
         return J(await anyio.to_thread.run_sync(svc.simulate, q["booster"], q["sustainer"], q.get("profile", ""), float(q["sep"]), float(q["ign"]), mass))
-
-    @app.get("/api/job/{name}")
-    async def job(name: str):
-        d = svc.resolve("jobs/" + name)
-        return J(svc.state.job_info(d))
 
     @app.get("/api/report")
     async def report():
@@ -302,19 +289,6 @@ def create_app(svc: Service) -> FastAPI:
         except (ValueError, yaml.YAMLError) as e:
             return J({"error": str(e)}, 400)
 
-    @app.post("/api/vm/start")
-    @app.post("/api/vm/stop")
-    async def vm_op(request: Request):
-        if svc.vm is None or not svc.vm.available:
-            return J({"error": "utmctl not found - is UTM installed? (vm.utmctl in config.yaml)"}, 400)
-        svc.vm.cfg.update({k: v for k, v in (svc.state.config().get("vm") or {}).items() if v is not None})
-        starting = request.url.path.endswith("start")
-        launched = (svc.vm.start_worker_async if starting else svc.vm.stop_worker_async)(lambda: svc.runner._emit("changed", {"t": time.time()}))
-        if not launched:
-            return J({"error": f"a VM operation is already in progress ({svc.vm.op['op']})"}, 409)
-        svc.runner.note(f"vm: {'starting' if starting else 'stopping'} the RASAero worker in '{svc.vm.cfg['name']}'")
-        return J(svc.vm.snapshot())
-
     @app.post("/api/reveal")
     async def reveal(request: Request):
         b = await body_of(request)
@@ -325,15 +299,10 @@ def create_app(svc: Service) -> FastAPI:
     async def shortlist_post(request: Request):
         return J(svc.set_shortlist(await body_of(request)))
 
-    @app.post("/api/job/{name}")
-    async def job_post(name: str, request: Request):
-        b = await body_of(request)
-        return J(svc.job_action(name, str(b.get("action"))))
-
     @app.post("/api/cleanup")
     async def cleanup(request: Request):
         b = await body_of(request)
-        return J(svc.cleanup(str(b.get("what")), float(b.get("older_days", 7))))
+        return J(svc.cleanup(str(b.get("what"))))
 
     @app.post("/api/store_path")
     async def store_path(request: Request):

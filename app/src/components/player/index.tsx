@@ -2,13 +2,12 @@
    the staging timeline and the motors' thrust curves. A port of the SVG
    player from the vanilla GUI; the drawings stay SVG (1:1 CSS px). */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Download, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { toast } from "sonner";
 import { BASE } from "@/lib/api";
 import { esc, fmt, isNum } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { Callout, Stat, StatList } from "../common";
-import { Button } from "../ui/button";
-import { Select } from "../ui/select";
+import { Button, Chip, Icon, IconButton, Kbd, Pill, Problem, Segmented, Stat, StatGrid } from "../ui";
 
 export const N_PER_LB = 4.448222, IN_PER_MM = 1 / 25.4, KG_TO_LB = 2.20462262;
 export const PHASE_DEFS = [{ id: "boost", name: "boost" }, { id: "sep_delay", name: "separation delay" }, { id: "ign_delay", name: "ignition delay" }, { id: "sustain", name: "sustainer burn" }, { id: "coast", name: "coast to apogee" }] as const;
@@ -130,7 +129,7 @@ export function RocketDiagram({ r, dz, snap }: { r: any; dz: any; snap: Snap }) 
     const maxSpan = Math.max(0, ...geo.parts.map((p: any) => (p.fins ? p.fins.span_in : 0))) * ppi;
     const rMax = (geo.max_diameter_in / 2) * ppi;
     const H = Math.ceil(2 * (rMax + maxSpan) + 60), cy = H / 2;
-    const defs = `<defs><linearGradient id="${uid}-flame" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fef08a"/><stop offset=".45" stop-color="#f97316"/><stop offset="1" stop-color="#f97316" stop-opacity="0"/></linearGradient></defs>`;
+    const defs = `<defs><linearGradient id="${uid}-flame" x1="0" y1="0" x2="1" y2="0"><stop offset="0" style="stop-color:var(--flame-0)"/><stop offset=".45" style="stop-color:var(--flame-1)"/><stop offset="1" style="stop-color:var(--flame-1);stop-opacity:0"/></linearGradient></defs>`;
     const finPoly = (p: any, side: number) => { const f = p.fins; if (!f) return ""; const aft = X(p.location_in + p.length_in), rr = rad(p); const le = aft - f.location_in * ppi, te = le + f.root_chord_in * ppi, tle = le + f.sweep_in * ppi, tte = tle + f.tip_chord_in * ppi; const y0 = cy + side * rr, y1 = cy + side * (rr + f.span_in * ppi); return `<polygon class="fin" points="${le.toFixed(1)},${y0.toFixed(1)} ${tle.toFixed(1)},${y1.toFixed(1)} ${tte.toFixed(1)},${y1.toFixed(1)} ${te.toFixed(1)},${y0.toFixed(1)}"/>`; };
     const partShape = (p: any) => {
       const x0 = X(p.location_in), x1 = X(p.location_in + p.length_in), rr = rad(p);
@@ -160,10 +159,10 @@ export function RocketDiagram({ r, dz, snap }: { r: any; dz: any; snap: Snap }) 
     const anno = `<g class="anno">${tag(susMx, 14, "sustainer", s ? s.label : "sustainer ?")}${boo.length ? tag(booMx, H - 6, "booster", b ? b.label : "booster ?") : ""}<line class="sepline" x1="${X(susAft).toFixed(1)}" y1="${(topY - 6).toFixed(1)}" x2="${X(susAft).toFixed(1)}" y2="${(botY + 6).toFixed(1)}"><title>separation plane</title></line><g class="sepgap"><line x1="${(X(susAft) + 4).toFixed(1)}" y1="${(cy + rMax + 8).toFixed(1)}" x2="${(X(susAft) + GAP - 4).toFixed(1)}" y2="${(cy + rMax + 8).toFixed(1)}"/></g></g>`;
     return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="--sep-gap:${GAP}px">${defs}${booG}${susG}${anno}</svg>`;
   }, [geo, b, s, W]);
-  if (!geo || !geo.parts || !geo.parts.length) return <Callout kind="info">no vehicle geometry — the CDX1 file could not be read{geo && geo.error ? ` (${geo.error})` : ""}</Callout>;
+  if (!geo || !geo.parts || !geo.parts.length) return <Problem tone="info">no vehicle geometry — the CDX1 file could not be read{geo && geo.error ? ` (${geo.error})` : ""}</Problem>;
   const id = PHASE_DEFS[snap.phase].id;
   const what: Record<string, string> = { boost: `${r.booster} burning, stack attached`, sep_delay: "coasting attached, about to separate", ign_delay: "separated, sustainer coasting before ignition", sustain: `${s ? s.label : "sustainer"} burning`, coast: `coasting to apogee${isNum(r.apogee_ft) ? " at " + fmt(r.apogee_ft, 0) + " ft" : ""}` };
-  return <div><div ref={ref} className="rocket-svg" data-phase={id} dangerouslySetInnerHTML={{ __html: svg }} /><div className="mt-1 text-[12px] text-muted">{PHASE_DEFS[snap.phase].name} · {what[id]} · t = {fmt(snap.t, snap.t < 60 ? 2 : 1)} s</div></div>;
+  return <div><div ref={ref} className="rocket-svg" data-phase={id} dangerouslySetInnerHTML={{ __html: svg }} /><div className="mt-1 text-[12px] text-ink-2">{PHASE_DEFS[snap.phase].name} · {what[id]} · t = {fmt(snap.t, snap.t < 60 ? 2 : 1)} s</div></div>;
 }
 
 /* ---- ascent track ---------------------------------------------------------------- */
@@ -191,11 +190,11 @@ export function AscentTrack({ r, cfg, d, T, snap }: { r: any; cfg: any; d: any; 
   let booster: { y: number; rot: number; op: number } | null = null;
   if (isNum(T[2]) && snap.t >= (T[2] as number)) { if (sepRef.current === null) sepRef.current = isNum(snap.alt) ? snap.alt : 0; const dt = snap.t - (T[2] as number); booster = { y: Math.min(gBot - 6, y(sepRef.current) + 30 * dt * dt), rot: dt * 25, op: Math.max(0, 1 - dt / 6) }; } else sepRef.current = null;
   const gauge = () => { const sub = cfg.profiles.subsonic_max_mach, sup = cfg.profiles.supersonic_min_mach; const gmax = Math.max(sup * 1.5, (r.max_mach || 0) * 1.1, 1.6); const x = (m: number) => Math.max(0, Math.min(100, (m / gmax) * 100)); return <div className="mach-gauge mt-1"><svg viewBox="0 0 100 8" preserveAspectRatio="none"><rect className="mg-sub" x="0" y="0" width={x(sub)} height="8" /><rect className="mg-trans" x={x(sub)} y="0" width={x(sup) - x(sub)} height="8" /><rect className="mg-sup" x={x(sup)} y="0" width={100 - x(sup)} height="8" /><rect className="mg-mark" x={isNum(snap.mach) ? Math.max(0, x(snap.mach) - 1) : 0} y="0" width="2" height="8" /></svg></div>; };
-  const Tile = ({ label, value, zone, extra }: { label: string; value: string; zone?: string; extra?: ReactNode }) => <div className={cn("hud-tile", zone)}><div className="text-[10px] uppercase text-muted">{label}</div><div className="text-[14px] font-semibold">{value}</div>{extra}</div>;
+  const Tile = ({ label, value, zone, extra }: { label: string; value: string; zone?: string; extra?: ReactNode }) => <div className={cn("stat !min-w-0 !px-2.5 !py-1.5", zone === "ok" && "ok", zone === "warn" && "warn", zone === "err" && "bad")}><div className="stat-label">{label}</div><div className="stat-value !text-[14px]">{value}</div>{extra}</div>;
   return <div className="flex min-h-[280px] flex-1 gap-2">
     <div ref={ref} className="ascent-svg relative min-w-0 flex-1 self-stretch">
       {W && H ? <svg className="absolute inset-0" width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
-        <defs><linearGradient id="rk-flame-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fef08a" /><stop offset=".45" stopColor="#f97316" /><stop offset="1" stopColor="#ef4444" stopOpacity="0" /></linearGradient></defs>
+        <defs><linearGradient id="rk-flame-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style={{ stopColor: "var(--flame-0)" }} /><stop offset=".45" style={{ stopColor: "var(--flame-1)" }} /><stop offset="1" style={{ stopColor: "var(--bad)", stopOpacity: 0 }} /></linearGradient></defs>
         <g className="axis">{niceTicks(0, top, H > 300 ? 6 : 4).map((v) => <g key={v}><line className="grid" x1={gx} x2={right} y1={y(v)} y2={y(v)} /><text className="axis-lbl" x={gx - 5} y={y(v) + 3.5} textAnchor="end">{tickLbl(v)}</text></g>)}</g>
         {isNum(target) && isNum(tol) ? <rect className="tol-band" x={gx} y={y(target + tol)} width={right - gx} height={Math.max(0, y(target - tol) - y(target + tol))} /> : null}
         {isNum(target) ? <><line className="target-line" x1={gx} x2={right} y1={y(target)} y2={y(target)}><title>target {fmt(target, 0)} ft</title></line><text className="target-lbl" x={right - 8} y={y(target) - 3} textAnchor="end">target</text></> : null}
@@ -243,7 +242,7 @@ export function StagingTimeline({ dz, player, T }: { dz: any; player: Player; T:
       <div className="timeline-svg"><svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} {...scrub}>
         <g className="ev-mark"><line x1={x0} x2={x0} y1={barY - 8} y2={barY} /><text x={x0} y={barY - 11} textAnchor="start">liftoff</text></g>
         {isNum(T[5]) ? <g className="ev-mark"><line x1={xAt(T[5] as number)} x2={xAt(T[5] as number)} y1={barY - 8} y2={barY} /><text x={xAt(T[5] as number)} y={barY - 11} textAnchor="end">apogee</text></g> : null}
-        {PHASE_DEFS.map((p, i) => { const xa = segX[i], xb = segX[i + 1]; if (!isNum(xa) || !isNum(xb)) return null; const durTxt = `${fmt((T[i + 1] as number) - (T[i] as number), (T[i + 1] as number) - (T[i] as number) < 10 ? 2 : 1)} s`; return <g key={p.id}><rect className={`seg-base ${p.id}`} x={xa} y={barY} width={xb - xa} height={barH} rx="3"><title>{p.name}: {durTxt} ({fmt(T[i], 2)} s → {fmt(T[i + 1], 2)} s)</title></rect><rect className={`seg-fill ${p.id}`} x={xa} y={barY} width={Math.max(0, Math.min(xb, px) - xa)} height={barH} rx="3" />{!showLens && (i === 1 || i === 2) && xb - xa > 40 ? <text className="seg-label" x={(xa + xb) / 2} y={barY + barH / 2 + 4} textAnchor="middle">{i === 1 ? "sep" : "ign"}</text> : null}</g>; })}
+        {PHASE_DEFS.map((p, i) => { const xa = segX[i], xb = segX[i + 1]; if (!isNum(xa) || !isNum(xb)) return null; const durTxt = `${fmt((T[i + 1] as number) - (T[i] as number), (T[i + 1] as number) - (T[i] as number) < 10 ? 2 : 1)} s`; return <g key={p.id}><rect className={`seg-base ${p.id}`} x={xa} y={barY} width={xb - xa} height={barH} rx="3"><title>{p.name}: {durTxt} ({fmt(T[i], 2)} s to {fmt(T[i + 1], 2)} s)</title></rect><rect className={`seg-fill ${p.id}`} x={xa} y={barY} width={Math.max(0, Math.min(xb, px) - xa)} height={barH} rx="3" />{!showLens && (i === 1 || i === 2) && xb - xa > 40 ? <text className="seg-label" x={(xa + xb) / 2} y={barY + barH / 2 + 4} textAnchor="middle">{i === 1 ? "sep" : "ign"}</text> : null}</g>; })}
         {niceTicks(0, end, W > 700 ? 8 : 5).map((v) => <g key={v}><line className="tick" x1={xAt(v)} x2={xAt(v)} y1={barY + barH} y2={tickY} /><text x={xAt(v)} y={labelY} textAnchor="middle">{fmt(v, 0)}s</text></g>)}
         {showLens ? <>
           <line className="lens-guide" x1={xAt((padded as number[])[0])} y1={barY + barH} x2={x0} y2={lensY} /><line className="lens-guide" x1={xAt((padded as number[])[1])} y1={barY + barH} x2={x1} y2={lensY} />
@@ -254,7 +253,7 @@ export function StagingTimeline({ dz, player, T }: { dz: any; player: Player; T:
         </> : null}
         <line className="playhead" x1={px} x2={px} y1={barY - 10} y2={showLens ? lensY : barY + barH} />
       </svg></div>
-      <div className="my-1 flex flex-wrap gap-1">{PHASE_DEFS.map((p, i) => { const d = isNum(T[i]) && isNum(T[i + 1]) ? (T[i + 1] as number) - (T[i] as number) : null; return <button key={p.id} type="button" className={cn("phase-chip", p.id, snap.phase === i && "active")} disabled={!isNum(T[i])} onClick={() => isNum(T[i]) && player.seek(T[i] as number)}><span className="dot" /><span>{p.name}</span><span className="text-muted">{isNum(d) ? fmt(d, d < 10 ? 2 : 1) + " s" : "?"}</span></button>; })}</div>
+      <div className="my-1 flex flex-wrap gap-1">{PHASE_DEFS.map((p, i) => { const d = isNum(T[i]) && isNum(T[i + 1]) ? (T[i + 1] as number) - (T[i] as number) : null; return <Chip key={p.id} sm className={cn("phase-chip", p.id)} on={snap.phase === i} disabled={!isNum(T[i])} onClick={() => isNum(T[i]) && player.seek(T[i] as number)}><span className="dot" /><span>{p.name}</span><span className="text-ink-3 num">{isNum(d) ? fmt(d, d < 10 ? 2 : 1) + " s" : "?"}</span></Chip>; })}</div>
       <div className="thrust-lane"><svg viewBox={`0 0 ${W} ${laneH}`} width={W} height={laneH} {...scrub}>
         <clipPath id={uid}><rect x="0" y="0" width={Math.max(0, px)} height={laneH} /></clipPath>
         {bPath ? <path className="lane-area dim booster" d={bPath} /> : null}{sPath ? <path className="lane-area dim sustainer" d={sPath} /> : null}
@@ -297,19 +296,19 @@ export function ThrustChart({ m, color, kind, T, snap }: { m: any; color: string
       {active ? <circle className="cursor" r="4" fill={color} cx={sx(localT as number)} cy={sy(c.f[findIdx(localT as number)])} /> : null}
       {tip ? <line className="hover-line" x1={sx(tip.t)} x2={sx(tip.t)} y1={mt} y2={mt + ih} /> : null}
     </svg> : null}
-    {tip ? <div className="pointer-events-none absolute z-10 rounded border border-line bg-panel px-2 py-1 text-[11px] shadow" style={{ left: tip.x + 14 + 150 > W ? tip.x - 160 : tip.x + 14, top: Math.max(0, tip.y - 10) }}><div><b>t</b> {fmt(tip.t, 2)} s</div><div><span style={{ color }}>thrust</span> {fmt(tip.f, 0)} N</div></div> : null}
+    {tip ? <div className="pointer-events-none absolute z-10 tip glass-strong !text-[11px] num" style={{ left: tip.x + 14 + 150 > W ? tip.x - 160 : tip.x + 14, top: Math.max(0, tip.y - 10) }}><div><b>t</b> {fmt(tip.t, 2)} s</div><div><span style={{ color }}>thrust</span> {fmt(tip.f, 0)} N</div></div> : null}
   </div>;
 }
 export function MotorPanel({ kind, m, err, r, T, snap }: { kind: "booster" | "sustainer"; m: any; err?: string; r: any; T: T6; snap: Snap }) {
-  const color = kind === "booster" ? "var(--c2)" : "var(--c1)";
-  const head = (name: ReactNode, extra?: ReactNode) => <span className="flex flex-wrap items-center gap-2 normal-case tracking-normal"><span className="rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase text-white" style={{ background: color }}>{kind}</span><b className="text-[13px] text-fg">{name}</b>{extra}</span>;
-  if (!m) return <Module title={head(kind === "booster" ? r.booster : r.sustainer || "—")}><Callout kind="warn">{err || "motor not found"}</Callout></Module>;
+  const color = kind === "booster" ? "var(--booster)" : "var(--sustainer)";
+  const head = (name: ReactNode, extra?: ReactNode) => <span className="flex flex-wrap items-center gap-2 normal-case tracking-normal"><span className={cn("stage-tag", kind)}>{kind}</span><b className="text-[13px] text-ink">{name}</b>{extra}</span>;
+  if (!m) return <Module title={head(kind === "booster" ? r.booster : r.sustainer || "—")}><Problem tone="warn">{err || "motor not found"}</Problem></Module>;
   const burnEnd = kind === "booster" ? T[1] : T[4], burnStart = kind === "booster" ? 0 : T[3];
   const burning = isNum(burnStart) && isNum(burnEnd) && snap.t >= burnStart && snap.t <= burnEnd;
-  return <Module title={head(m.label, <>{m.designation !== m.label ? <span className="text-[12px] font-normal text-muted">{m.designation}</span> : null}{burning ? <span className="rounded-full bg-run-bg px-2 text-[11px] font-normal text-run">burning</span> : null}</>)} extra={<a className="text-accent" href={`${BASE}/download/eng?kind=${kind}&label=${encodeURIComponent(m.label)}`} download title={`download ${m.label}.eng`}>⬇ .eng</a>}>
-    <StatList grid className="mb-2"><Stat label="total impulse" value={fmt(m.total_impulse_ns, 0)} unit={`N·s${m.impulse_class ? " · " + m.impulse_class : ""}`} /><Stat label="burn time" value={fmt(m.burn_time_s, 2)} unit="s" /><Stat label="avg / peak" value={`${fmt(m.avg_thrust_n, 0)} / ${fmt(m.peak_thrust_n, 0)}`} unit="N" /><Stat label="propellant" value={fmt(m.prop_mass_kg, 2)} unit="kg" sub={`${fmt(m.prop_mass_kg * KG_TO_LB, 2)} lb`} /><Stat label="size" value={`${fmt(m.diameter_mm, 0)} × ${fmt(m.length_mm, 0)}`} unit="mm" /><Stat label="nozzle throat / exit" value={`${fmt(m.nozzle_throat_in, 2)} / ${fmt(m.nozzle_exit_in, 2)}`} unit="in" /></StatList>
+  return <Module title={head(m.label, <>{m.designation !== m.label ? <span className="text-[12px] font-normal text-ink-3">{m.designation}</span> : null}{burning ? <Pill tone="info" lower>burning</Pill> : null}</>)} extra={<a className="link" href={`${BASE}/download/eng?kind=${kind}&label=${encodeURIComponent(m.label)}`} download title={`download ${m.label}.eng`}><Icon of={Download} size="xs" />.eng</a>}>
+    <StatGrid className="mb-2"><Stat label="total impulse" value={fmt(m.total_impulse_ns, 0)} unit={`N·s${m.impulse_class ? " · " + m.impulse_class : ""}`} /><Stat label="burn time" value={fmt(m.burn_time_s, 2)} unit="s" /><Stat label="avg / peak" value={`${fmt(m.avg_thrust_n, 0)} / ${fmt(m.peak_thrust_n, 0)}`} unit="N" /><Stat label="propellant" value={fmt(m.prop_mass_kg, 2)} unit="kg" sub={`${fmt(m.prop_mass_kg * KG_TO_LB, 2)} lb`} /><Stat label="size" value={`${fmt(m.diameter_mm, 0)} × ${fmt(m.length_mm, 0)}`} unit="mm" /><Stat label="nozzle throat / exit" value={`${fmt(m.nozzle_throat_in, 2)} / ${fmt(m.nozzle_exit_in, 2)}`} unit="in" /></StatGrid>
     <ThrustChart m={m} color={color} kind={kind} T={T} snap={snap} />
-    <div className="mt-1 font-mono text-[11px] text-muted" title={m.file}>{m.file.split("/").pop()}{m.n_in_file > 1 ? ` (motor ${m.designation} of ${m.n_in_file})` : ""}</div>
+    <div className="mt-1 font-mono text-[11px] text-ink-3 truncate" title={m.file}>{m.file.split("/").pop()}{m.n_in_file > 1 ? ` (motor ${m.designation} of ${m.n_in_file})` : ""}</div>
   </Module>;
 }
 
@@ -324,14 +323,15 @@ export function FlightConfig({ r, dz, hist, histKind, cfg, d, onPlayerChange }: 
   useEffect(() => { onPlayerChange?.(player); }, [player.snap, player.playing]); // eslint-disable-line react-hooks/exhaustive-deps
   const canZip = !!(b && s);
   const q = `booster=${encodeURIComponent(r.booster)}&sustainer=${encodeURIComponent(sLabel)}`;
-  return <div className="card flight-config outline-none" tabIndex={0} onKeyDown={(e) => { if (e.code === "Space") { e.preventDefault(); player.toggle(); } else if (e.code === "ArrowRight") { e.preventDefault(); player.seek(player.t + (e.shiftKey ? 1 : 0.1)); } else if (e.code === "ArrowLeft") { e.preventDefault(); player.seek(player.t - (e.shiftKey ? 1 : 0.1)); } else if (e.code === "Home") { e.preventDefault(); player.seek(0); } else if (e.code === "End") { e.preventDefault(); player.seek(player.end); } }}>
-    <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-line pb-2"><b>Flight configuration</b>{histKind === "estimated" ? <span className="rounded-full bg-warn-bg px-2 text-[11px] text-warn" title="estimate; run verify for the checked flight">estimated</span> : null}<span className="flex-1" />
-      {b ? <a className="text-[12px] text-accent" href={`${BASE}/download/eng?kind=booster&label=${encodeURIComponent(b.label)}`} download>⬇ booster</a> : null}{s ? <a className="text-[12px] text-accent" href={`${BASE}/download/eng?kind=sustainer&label=${encodeURIComponent(sLabel)}`} download>⬇ sustainer</a> : null}
-      <a className={cn("rounded-md border border-accent bg-accent px-2 py-0.5 text-[12px] text-white", !canZip && "opacity-50")} href={canZip ? `${BASE}/download/combo?${q}&profile=${encodeURIComponent(r.profile || "")}` : undefined} download onClick={(e) => { if (!canZip) { e.preventDefault(); toast.error("cannot build the combo: a motor is missing"); } else toast(`downloading ${r.booster} + ${sLabel} motor combo`); }}>⬇ combo</a></div>
-    <div className="grid gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+  const seekEvent = (dir: 1 | -1) => { const ts = T.filter(isNum) as number[]; const t = player.t; const next = dir > 0 ? ts.find((x) => x > t + 1e-6) : ts.slice().reverse().find((x) => x < t - 1e-6); player.seek(next ?? (dir > 0 ? player.end : 0)); };
+  return <div className="glass card static flight-config" tabIndex={0} onKeyDown={(e) => { if (e.code === "Space") { e.preventDefault(); player.toggle(); } else if (e.code === "ArrowRight") { e.preventDefault(); player.seek(player.t + (e.shiftKey ? 1 : 0.1)); } else if (e.code === "ArrowLeft") { e.preventDefault(); player.seek(player.t - (e.shiftKey ? 1 : 0.1)); } else if (e.code === "Home") { e.preventDefault(); player.seek(0); } else if (e.code === "End") { e.preventDefault(); player.seek(player.end); } }}>
+    <div className="flex flex-wrap items-center gap-2 border-b border-line pb-3"><span className="card-title">Flight configuration</span>{histKind === "estimated" ? <Pill tone="warn" title="estimate; run verify for the checked flight">estimated</Pill> : histKind === "verified" ? <Pill tone="good">verified</Pill> : null}<span className="flex-1" />
+      {b ? <a className="link" href={`${BASE}/download/eng?kind=booster&label=${encodeURIComponent(b.label)}`} download><Icon of={Download} size="xs" />booster</a> : null}{s ? <a className="link" href={`${BASE}/download/eng?kind=sustainer&label=${encodeURIComponent(sLabel)}`} download><Icon of={Download} size="xs" />sustainer</a> : null}
+      <Button variant="primary" size="sm" asChild disabled={!canZip}><a href={canZip ? `${BASE}/download/combo?${q}&profile=${encodeURIComponent(r.profile || "")}` : undefined} download onClick={(e) => { if (!canZip) { e.preventDefault(); toast.error("cannot build the combo: a motor is missing"); } else toast(`downloading ${r.booster} + ${sLabel} motor combo`); }}><Icon of={Download} size="sm" />combo</a></Button></div>
+    <div className="grid gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] mt-3">
       <div className="flex flex-col gap-3">
         <Module title="Vehicle" extra={<>{(dz.vehicle && dz.vehicle.file) || "?"} · {dz.vehicle ? fmt(dz.vehicle.total_length_in, 1) : "?"} in overall · {dz.vehicle ? fmt(dz.vehicle.max_diameter_in, 2) : "?"} in dia</>}><RocketDiagram r={r} dz={dz} snap={player.snap} /></Module>
-        <Module title="Timeline" extra={<><Button size="sm" variant="primary" title="play / pause (space)" onClick={player.toggle}>{player.playing ? "❚❚" : "▶"}</Button><Select className="h-7" value={player.speed} onChange={(e) => player.setSpeed(Number(e.target.value))}>{[1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</Select><span className="ml-1 text-faint"><span className="kbd">space</span> play · <span className="kbd">←</span><span className="kbd">→</span> step · <span className="kbd">shift</span> ×10</span></>}><StagingTimeline dz={dz} player={player} T={T} /></Module>
+        <Module title="Timeline" extra={<><IconButton icon={SkipBack} label="previous event" onClick={() => seekEvent(-1)} className="!w-7 !h-7" /><Button size="sm" variant="primary" title="play / pause (space)" onClick={player.toggle} className="!px-2.5"><Icon of={player.playing ? Pause : Play} size="sm" />{player.playing ? "pause" : "play"}</Button><IconButton icon={SkipForward} label="next event" onClick={() => seekEvent(1)} className="!w-7 !h-7" /><Segmented sm value={player.speed} options={[1, 2, 4, 8].map((x) => ({ value: x, label: `${x}x` }))} onChange={(x) => player.setSpeed(x)} /><span className="ml-1 text-ink-3 hidden xl:inline"><Kbd>space</Kbd> play · <Kbd>arrows</Kbd> step · <Kbd>shift</Kbd> x10</span></>}><StagingTimeline dz={dz} player={player} T={T} /></Module>
       </div>
       <Module title="Ascent" bodyClass="flex flex-col"><AscentTrack r={r} cfg={cfg} d={d} T={T} snap={player.snap} /></Module>
     </div>

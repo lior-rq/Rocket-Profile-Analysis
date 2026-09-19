@@ -1,131 +1,25 @@
 @import "tailwindcss";
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/components.css";
+@import "./styles/player.css";
+@import "./styles/charts.css";
 
-@custom-variant dark (&:where(.dark, .dark *));
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --color-bg: var(--bg);
-  --color-panel: var(--panel);
-  --color-panel-2: var(--panel-2);
-  --color-line: var(--border);
-  --color-line-strong: var(--border-strong);
-  --color-fg: var(--text);
-  --color-muted: var(--muted);
-  --color-faint: var(--faint);
-  --color-accent: var(--accent);
-  --color-accent-bg: var(--accent-bg);
-  --color-ok: var(--ok);
-  --color-ok-bg: var(--ok-bg);
-  --color-warn: var(--warn);
-  --color-warn-bg: var(--warn-bg);
-  --color-err: var(--err);
-  --color-err-bg: var(--err-bg);
-  --color-info: var(--info);
-  --color-info-bg: var(--info-bg);
-  --color-run: var(--run);
-  --color-run-bg: var(--run-bg);
-  --radius-card: 10px;
+@theme inline {
+  --color-bg: var(--bg); --color-bg-2: var(--bg-2);
+  --color-surface: var(--surface); --color-surface-2: var(--surface-2); --color-surface-3: var(--surface-3);
+  --color-ink: var(--ink); --color-ink-2: var(--ink-2); --color-ink-3: var(--ink-3); --color-on-accent: var(--on-accent);
+  --color-line: var(--line); --color-line-2: var(--line-2); --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent); --color-accent-2: var(--accent-2);
+  --color-good: var(--good); --color-good-2: var(--good-2);
+  --color-warn: var(--warn); --color-warn-2: var(--warn-2);
+  --color-bad: var(--bad); --color-bad-2: var(--bad-2);
+  --color-info: var(--info); --color-info-2: var(--info-2);
+  --color-run: var(--run); --color-run-2: var(--run-2);
+  --color-booster: var(--booster); --color-sustainer: var(--sustainer);
+  --font-sans: var(--sans); --font-mono: var(--mono);
+  --radius-1: var(--r-1); --radius-2: var(--r-2); --radius-3: var(--r-3); --radius-4: var(--r-4);
+  --shadow-card: var(--shadow); --shadow-card-lg: var(--shadow-lg); --shadow-glow: var(--glow-accent);
 }
-
-:root {
-  --bg: #f4f6fa; --panel: #ffffff; --panel-2: #f8fafc; --border: #e2e8f0; --border-strong: #cbd5e1;
-  --text: #0f172a; --muted: #64748b; --faint: #94a3b8; --accent: #2563eb; --accent-bg: #dbeafe;
-  --ok: #16a34a; --ok-bg: #dcfce7; --warn: #d97706; --warn-bg: #fef3c7; --err: #dc2626; --err-bg: #fee2e2;
-  --info: #0891b2; --info-bg: #cffafe; --run: #7c3aed; --run-bg: #ede9fe;
-  --c1: #2563eb; --c2: #f97316; --c3: #16a34a; --c4: #9333ea; --c5: #dc2626; --c6: #0891b2; --c7: #ca8a04;
-  color-scheme: light;
-}
-.dark {
-  --bg: #0b1220; --panel: #111a2b; --panel-2: #0f1727; --border: #1f2a3d; --border-strong: #2d3b52;
-  --text: #e5eaf3; --muted: #94a3b8; --faint: #64748b; --accent: #60a5fa; --accent-bg: #172554;
-  --ok: #4ade80; --ok-bg: #052e16; --warn: #fbbf24; --warn-bg: #3b2506; --err: #f87171; --err-bg: #3f0d0d;
-  --info: #22d3ee; --info-bg: #083344; --run: #a78bfa; --run-bg: #2e1065;
-  color-scheme: dark;
-}
-
-html, body, #root { height: 100%; }
-body { @apply bg-bg text-fg font-sans text-[13.5px] antialiased; }
-* { border-color: var(--border); }
-::selection { background: var(--accent-bg); }
-.mono { font-family: var(--font-mono); }
-.card { @apply bg-panel border border-line rounded-[var(--radius-card)] p-4 shadow-sm; }
-.card.tight { @apply p-3; }
-.kbd { @apply inline-block rounded border border-line-strong bg-panel-2 px-1 text-[11px] leading-4 font-mono; }
-.console { @apply font-mono text-[12px] leading-[1.45] whitespace-pre-wrap bg-panel-2 border border-line rounded p-2 max-h-[420px] overflow-auto; }
-.log-line { @apply px-2 py-[1px] whitespace-pre-wrap break-words; }
-.log-line.cmd { color: var(--accent); font-weight: 600; }
-.log-line.hdr { color: var(--run); font-weight: 600; }
-.log-line.done { color: var(--ok); font-weight: 600; }
-.log-line.bad { color: var(--err); }
-.log-line.warn { color: var(--warn); }
-.errors-only .log-line:not(.bad):not(.warn):not(.cmd):not(.hdr):not(.done) { display: none; }
-
-/* flight player SVG styling */
-.rocket-svg svg { width: 100%; height: auto; display: block; }
-.rocket-svg .body { fill: var(--panel-2); stroke: var(--text); stroke-width: 1.2; }
-.rocket-svg .body.booster { fill: color-mix(in srgb, var(--c2) 18%, var(--panel)); }
-.rocket-svg .body.sustainer { fill: color-mix(in srgb, var(--c1) 14%, var(--panel)); }
-.rocket-svg .fin { fill: var(--border-strong); stroke: var(--text); stroke-width: 1; }
-.rocket-svg .motor rect { fill: var(--faint); opacity: .8; }
-.rocket-svg .motor .grain { stroke: var(--panel); stroke-width: 1.4; }
-.rocket-svg .motor .nozzle { fill: var(--muted); }
-.rocket-svg .flame { opacity: 0; transition: opacity .15s; }
-.rocket-svg[data-phase="boost"] .flame.booster, .rocket-svg[data-phase="sustain"] .flame.sustainer { opacity: 1; }
-.rocket-svg .sepline { stroke: var(--err); stroke-dasharray: 3 3; }
-.rocket-svg .sepgap line { stroke: var(--muted); stroke-dasharray: 2 2; }
-.rocket-svg .tag { font-size: 11px; fill: var(--muted); }
-.rocket-svg[data-phase="ign_delay"] .booster-g, .rocket-svg[data-phase="sustain"] .booster-g, .rocket-svg[data-phase="coast"] .booster-g { transform: translateX(var(--sep-gap, 60px)); opacity: .55; transition: transform .4s, opacity .4s; }
-.ascent-svg svg { display: block; }
-.ascent-svg .grid { stroke: var(--border); }
-.ascent-svg .axis-lbl { font-size: 10px; fill: var(--muted); }
-.ascent-svg .tol-band { fill: var(--ok); opacity: .15; }
-.ascent-svg .target-line { stroke: var(--accent); stroke-dasharray: 4 3; }
-.ascent-svg .target-lbl { font-size: 10px; fill: var(--accent); }
-.ascent-svg .ground { stroke: var(--text); }
-.ascent-svg .ev-dot.apogee { fill: var(--ok); } .ascent-svg .ev-dot.ign { fill: var(--err); }
-.ascent-svg .rk-body { fill: var(--panel); stroke: var(--text); stroke-width: 1.1; }
-.ascent-svg .rk-nose { fill: var(--c1); } .ascent-svg .rk-fin { fill: var(--border-strong); stroke: var(--text); stroke-width: .8; }
-.ascent-svg .rk-win { fill: var(--c6); } .ascent-svg .rk-noz { fill: var(--muted); }
-.ascent-svg .rk-flame { opacity: 0; transition: opacity .15s; } .ascent-svg .rk-flame.on { opacity: 1; }
-.ascent-svg .rk-booster { fill: color-mix(in srgb, var(--c2) 30%, var(--panel)); stroke: var(--text); stroke-width: .8; }
-.ascent-svg .rk-booster-fin { fill: var(--border-strong); }
-.timeline-svg svg, .thrust-lane svg { display: block; width: 100%; }
-.timeline-svg .seg-base { fill: var(--panel-2); stroke: var(--border-strong); }
-.timeline-svg .seg-fill.boost { fill: var(--c2); } .timeline-svg .seg-fill.sep_delay { fill: var(--c4); } .timeline-svg .seg-fill.ign_delay { fill: var(--c5); } .timeline-svg .seg-fill.sustain { fill: var(--c1); } .timeline-svg .seg-fill.coast { fill: var(--c3); }
-.timeline-svg .seg-fill { opacity: .75; }
-.timeline-svg .tick { stroke: var(--border-strong); } .timeline-svg text { font-size: 10px; fill: var(--muted); }
-.timeline-svg .seg-label { fill: var(--text); font-weight: 600; }
-.timeline-svg .lens-bg { fill: var(--panel-2); stroke: var(--border); } .timeline-svg .lens-guide { stroke: var(--border-strong); stroke-dasharray: 2 2; }
-.timeline-svg .ev-tick { stroke: var(--text); } .timeline-svg .ev-label { fill: var(--text); }
-.timeline-svg .ev-mark line { stroke: var(--text); } .timeline-svg .ev-mark text { fill: var(--text); font-weight: 600; }
-.playhead { stroke: var(--err); stroke-width: 2; }
-.thrust-lane .lane-area.dim { opacity: .18; } .thrust-lane .lane-area.booster { fill: var(--c2); } .thrust-lane .lane-area.sustainer { fill: var(--c1); }
-.thrust-chart svg { display: block; width: 100%; }
-.thrust-chart .grid line { stroke: var(--border); } .thrust-chart .axis text { font-size: 10px; fill: var(--muted); }
-.thrust-chart .area { opacity: .15; } .thrust-chart .line { fill: none; stroke-width: 1.6; opacity: .45; } .thrust-chart .line.bright { opacity: 1; stroke-width: 2; }
-.thrust-chart .avg-line { stroke: var(--muted); stroke-dasharray: 4 3; } .thrust-chart .peak-label, .thrust-chart .avg-label { font-size: 10px; fill: var(--muted); }
-.thrust-chart .hover-line { stroke: var(--faint); }
-.phase-chip { @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-panel-2 px-2 py-0.5 text-[12px] disabled:opacity-40; }
-.phase-chip.active { border-color: var(--accent); background: var(--accent-bg); }
-.phase-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
-.phase-chip.boost .dot { background: var(--c2); } .phase-chip.sep_delay .dot { background: var(--c4); } .phase-chip.ign_delay .dot { background: var(--c5); } .phase-chip.sustain .dot { background: var(--c1); } .phase-chip.coast .dot { background: var(--c3); }
-.mach-gauge svg { width: 100%; height: 8px; display: block; border-radius: 4px; overflow: hidden; }
-.mach-gauge .mg-sub { fill: var(--ok); opacity: .5; } .mach-gauge .mg-trans { fill: var(--warn); opacity: .5; } .mach-gauge .mg-sup { fill: var(--err); opacity: .5; } .mach-gauge .mg-mark { fill: var(--text); }
-.hud-tile { @apply rounded border border-line bg-panel-2 px-2 py-1; }
-.hud-tile.ok { border-color: var(--ok); } .hud-tile.warn { border-color: var(--warn); } .hud-tile.err { border-color: var(--err); }
-.md h1 { @apply text-xl font-semibold mt-4 mb-2; } .md h2 { @apply text-lg font-semibold mt-4 mb-2; } .md h3 { @apply text-base font-semibold mt-3 mb-1; }
-.md p { @apply my-2; } .md ul { @apply list-disc pl-5 my-2; } .md code { @apply font-mono text-[12px] bg-panel-2 rounded px-1; }
-.md table { @apply text-[12px] border-collapse my-2; } .md th, .md td { @apply border border-line px-2 py-1 text-left; } .md th { @apply bg-panel-2; }
-.matrix td.cell { cursor: pointer; text-align: right; }
-.matrix td.cell.solved { background: color-mix(in srgb, var(--ok) 18%, transparent); }
-.matrix td.cell.overpowered, .matrix td.cell.underpowered { background: color-mix(in srgb, var(--warn) 18%, transparent); }
-.matrix td.cell.unsolved { background: color-mix(in srgb, var(--err) 18%, transparent); }
-.matrix td.cell.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
-.matrix td.cell .d { display: block; font-size: 10px; color: var(--muted); }
-/* flight player modules: one bordered box with a title bar per part */
-.fc-module { @apply flex min-w-0 flex-col overflow-hidden rounded-md border border-line bg-panel; }
-.fc-module-head { @apply flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-line bg-panel-2 px-3 py-1.5; }
-.fc-module-title { @apply text-[11px] font-semibold uppercase tracking-wide text-muted; }
-.fc-module-extra { @apply flex flex-wrap items-center gap-1.5 text-[11px] text-muted; }
-.fc-module-body { @apply min-h-0 flex-1 p-3; }

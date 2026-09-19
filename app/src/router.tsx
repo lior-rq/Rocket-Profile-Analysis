@@ -9,6 +9,7 @@ import { RunsPage } from "@/pages/Runs";
 import { EnginePage } from "@/pages/Engine";
 import { SettingsPage } from "@/pages/Settings";
 import { SetupPage } from "@/pages/Setup";
+import { DevUiPage } from "@/pages/DevUi";
 
 const rootRoute = createRootRoute({ component: Shell });
 const anySearch = (s: Record<string, unknown>) => s as Record<string, string | undefined>;
@@ -22,6 +23,8 @@ const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: "/engine", component: EnginePage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/setup", component: SetupPage }),
+  // Every primitive in every state, for eyeballing both themes. Dev only.
+  ...(import.meta.env.DEV ? [createRoute({ getParentRoute: () => rootRoute, path: "/dev/ui", component: DevUiPage })] : []),
 ];
 const routeTree = rootRoute.addChildren(routes);
 export const router = createRouter({ routeTree, defaultPreload: false, scrollRestoration: false });

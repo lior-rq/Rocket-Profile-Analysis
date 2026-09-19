@@ -1,0 +1,13 @@
+/* ECharts hosts. The chart itself is themed from tokens in charts/theme.ts. */
+@layer components {
+  .chart { position: relative; width: 100%; min-height: 220px; }
+  .chart > div { border-radius: var(--r-2); }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--fs-2); color: var(--ink-2); }
+  .chart-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .chart-legend .swatch.dash { height: 0; width: 14px; border-top: 2px dashed currentColor; border-radius: 0; }
+  .chart-legend .swatch.line { height: 0; width: 14px; border-top: 2px solid currentColor; border-radius: 0; }
+  .chart-legend .swatch.tick { width: 0; height: 12px; border-left: 2px dashed currentColor; border-radius: 0; }
+  .echarts-tip { font-family: var(--sans); }
+  .echarts-tip .row { display: flex; justify-content: space-between; gap: 14px; }
+  .echarts-tip .row b { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+}

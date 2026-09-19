@@ -2,10 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2c5 4 7 11 7 18l-3 3H12l-3-3c0-7 2-14 7-18z' fill='%233b82f6'/%3E%3Ccircle cx='16' cy='13' r='3' fill='white'/%3E%3Cpath d='M12 23l-4 6h5l1-3zM20 23l4 6h-5l-1-3z' fill='%23f97316'/%3E%3C/svg%3E" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Rocket Profile Analysis</title>
-    <script>try{var t=localStorage.getItem('rpa-theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.classList.add('dark')}catch(e){}</script>
+    <script>
+      /* Theme before first paint: no white frame. "auto" follows the OS. */
+      try {
+        var t = localStorage.getItem("rpa-theme");
+        var dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        document.documentElement.style.background = dark ? "#05070c" : "#eef1f6";
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

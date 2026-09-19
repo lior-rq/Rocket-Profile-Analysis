@@ -1,0 +1,103 @@
+/* Local variable fonts. "block": the files ship with the app, so there is
+   nothing to swap in from and no fallback flash inside the WebView. */
+@font-face {
+  font-family: "Inter Variable"; font-style: normal; font-display: block; font-weight: 100 900;
+  src: url(../../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2) format("woff2-variations");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family: "Inter Variable"; font-style: normal; font-display: block; font-weight: 100 900;
+  src: url(../../node_modules/@fontsource-variable/inter/files/inter-latin-ext-wght-normal.woff2) format("woff2-variations");
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono Variable"; font-style: normal; font-display: block; font-weight: 100 800;
+  src: url(../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2) format("woff2-variations");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono Variable"; font-style: normal; font-display: block; font-weight: 100 800;
+  src: url(../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-ext-wght-normal.woff2) format("woff2-variations");
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+@layer base {
+  * { box-sizing: border-box; border-color: var(--line); }
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 13px/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    padding-bottom: calc(var(--drawer-h) + 24px);
+  }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; background: none; border: 0; padding: 0; }
+  button:disabled, input:disabled, select:disabled { cursor: not-allowed; }
+  h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
+  p { margin: 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: var(--mono); font-size: .88em;
+    background: var(--surface-3); padding: 1px 5px; border-radius: 4px;
+  }
+  sup { font-size: .7em; }
+  strong, b { font-weight: 620; color: var(--ink); }
+  small { font-size: var(--fs-1); }
+  ::selection { background: var(--accent-2); }
+
+  :focus { outline: none; }
+  :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  :focus:not(:focus-visible) { outline: none; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: var(--r-pill);
+    border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--line-strong); background-clip: padding-box; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  * { scrollbar-color: var(--surface-3) transparent; scrollbar-width: thin; }
+
+  body.dragging, body.dragging * { user-select: none !important; cursor: row-resize !important; }
+}
+
+.num, .n { font-variant-numeric: tabular-nums; font-family: var(--mono); }
+.sans { font-family: var(--sans); }
+.micro { font-size: var(--fs-0); font-weight: 520; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+.truncate-1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Backdrop: a slow drift of two glows and a faint grid, so the page has depth
+   without a single pixel of it competing with a chart. */
+.backdrop {
+  position: fixed; inset: 0; z-index: var(--z-backdrop); pointer-events: none;
+  background:
+    radial-gradient(900px 600px at 15% -10%, var(--accent-2), transparent 60%),
+    radial-gradient(700px 500px at 110% 20%, var(--warn-2), transparent 60%),
+    var(--bg);
+  background-size: 130% 130%, 130% 130%, auto;
+  animation: drift 40s var(--ease-in-out) infinite alternate;
+}
+.backdrop::after {
+  content: ""; position: absolute; inset: 0;
+  background-image:
+    linear-gradient(var(--line-2) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line-2) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 0%, black 20%, transparent 75%);
+  mask-image: radial-gradient(ellipse at 50% 0%, black 20%, transparent 75%);
+  opacity: .45;
+}
+@keyframes drift {
+  from { background-position: 0% 0%, 100% 0%, 0 0; }
+  to   { background-position: 6% 4%, 94% 8%, 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important; scroll-behavior: auto !important;
+  }
+  .backdrop { animation: none; }
+}

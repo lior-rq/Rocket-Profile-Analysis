@@ -1,0 +1,72 @@
+/* Flight player. Every fill and stroke is a token; the drawings stay SVG. */
+@layer components {
+  .rocket-svg svg { width: 100%; height: auto; display: block; }
+  .rocket-svg .body { fill: var(--surface-2); stroke: var(--ink); stroke-width: 1.2; }
+  .rocket-svg .body.booster { fill: var(--warn-2); fill: color-mix(in srgb, var(--booster) 18%, var(--bg-2)); }
+  .rocket-svg .body.sustainer { fill: var(--accent-2); fill: color-mix(in srgb, var(--sustainer) 14%, var(--bg-2)); }
+  .rocket-svg .fin { fill: var(--line-strong); stroke: var(--ink); stroke-width: 1; }
+  .rocket-svg .motor rect { fill: var(--ink-3); opacity: .8; }
+  .rocket-svg .motor .grain { stroke: var(--bg-2); stroke-width: 1.4; }
+  .rocket-svg .motor .nozzle { fill: var(--ink-2); }
+  .rocket-svg .flame { opacity: 0; transition: opacity var(--dur-2); }
+  .rocket-svg[data-phase="boost"] .flame.booster, .rocket-svg[data-phase="sustain"] .flame.sustainer { opacity: 1; }
+  .rocket-svg .sepline { stroke: var(--bad); stroke-dasharray: 3 3; }
+  .rocket-svg .sepgap line { stroke: var(--ink-2); stroke-dasharray: 2 2; }
+  .rocket-svg .tag { font-size: 11px; fill: var(--ink-2); font-family: var(--sans); }
+  .rocket-svg .tag.booster { fill: var(--booster); } .rocket-svg .tag.sustainer { fill: var(--sustainer); }
+  .rocket-svg[data-phase="ign_delay"] .booster-g, .rocket-svg[data-phase="sustain"] .booster-g, .rocket-svg[data-phase="coast"] .booster-g {
+    transform: translateX(var(--sep-gap, 60px)); opacity: .55; transition: transform .4s var(--ease-out), opacity .4s; }
+
+  .ascent-svg svg { display: block; }
+  .ascent-svg .grid { stroke: var(--line); }
+  .ascent-svg .axis-lbl { font-size: 10px; fill: var(--ink-3); font-family: var(--mono); }
+  .ascent-svg .tol-band { fill: var(--band); }
+  .ascent-svg .target-line { stroke: var(--target); stroke-dasharray: 4 3; }
+  .ascent-svg .target-lbl { font-size: 10px; fill: var(--target); font-family: var(--sans); }
+  .ascent-svg .ground { stroke: var(--ink); }
+  .ascent-svg .ev-dot.apogee { fill: var(--ev-apogee); } .ascent-svg .ev-dot.ign { fill: var(--ev-ign); }
+  .ascent-svg .rk-body { fill: var(--bg-2); stroke: var(--ink); stroke-width: 1.1; }
+  .ascent-svg .rk-nose { fill: var(--sustainer); } .ascent-svg .rk-fin { fill: var(--line-strong); stroke: var(--ink); stroke-width: .8; }
+  .ascent-svg .rk-win { fill: var(--series-7); } .ascent-svg .rk-noz { fill: var(--ink-2); }
+  .ascent-svg .rk-flame { opacity: 0; transition: opacity var(--dur-2); } .ascent-svg .rk-flame.on { opacity: 1; }
+  .ascent-svg .rk-booster { fill: var(--warn-2); fill: color-mix(in srgb, var(--booster) 30%, var(--bg-2)); stroke: var(--ink); stroke-width: .8; }
+  .ascent-svg .rk-booster-fin { fill: var(--line-strong); }
+
+  .timeline-svg svg, .thrust-lane svg { display: block; width: 100%; }
+  .timeline-svg .seg-base { fill: var(--surface-2); stroke: var(--line-strong); }
+  .timeline-svg .seg-fill.boost { fill: var(--phase-boost); } .timeline-svg .seg-fill.sep_delay { fill: var(--phase-sep); }
+  .timeline-svg .seg-fill.ign_delay { fill: var(--phase-ign); } .timeline-svg .seg-fill.sustain { fill: var(--phase-sustain); }
+  .timeline-svg .seg-fill.coast { fill: var(--phase-coast); }
+  .timeline-svg .seg-fill { opacity: .75; }
+  .timeline-svg .tick { stroke: var(--line-strong); } .timeline-svg text { font-size: 10px; fill: var(--ink-3); font-family: var(--mono); }
+  .timeline-svg .seg-label { fill: var(--ink); font-weight: 600; font-family: var(--sans); }
+  .timeline-svg .lens-bg { fill: var(--surface-2); stroke: var(--line); } .timeline-svg .lens-guide { stroke: var(--line-strong); stroke-dasharray: 2 2; }
+  .timeline-svg .ev-tick { stroke: var(--ink); } .timeline-svg .ev-label { fill: var(--ink); font-family: var(--sans); }
+  .timeline-svg .ev-mark line { stroke: var(--ink); } .timeline-svg .ev-mark text { fill: var(--ink); font-weight: 600; font-family: var(--sans); }
+  .playhead { stroke: var(--accent); stroke-width: 2; filter: drop-shadow(0 0 4px var(--accent-glow)); }
+  .thrust-lane .lane-area.dim { opacity: .18; } .thrust-lane .lane-area.booster { fill: var(--booster); } .thrust-lane .lane-area.sustainer { fill: var(--sustainer); }
+
+  .thrust-chart svg { display: block; width: 100%; }
+  .thrust-chart .grid line { stroke: var(--line); } .thrust-chart .axis text { font-size: 10px; fill: var(--ink-3); font-family: var(--mono); }
+  .thrust-chart .axis line { stroke: var(--line-strong); }
+  .thrust-chart .area { opacity: .15; } .thrust-chart .line { fill: none; stroke-width: 1.6; opacity: .45; } .thrust-chart .line.bright { opacity: 1; stroke-width: 2; }
+  .thrust-chart .avg-line { stroke: var(--ink-2); stroke-dasharray: 4 3; } .thrust-chart .peak-label, .thrust-chart .avg-label { font-size: 10px; fill: var(--ink-3); font-family: var(--sans); }
+  .thrust-chart .hover-line { stroke: var(--ink-3); }
+  .thrust-chart .cursor { filter: drop-shadow(0 0 4px var(--accent-glow)); }
+
+  .phase-chip .dot { width: 8px; height: 8px; }
+  .phase-chip.boost .dot { background: var(--phase-boost); } .phase-chip.sep_delay .dot { background: var(--phase-sep); }
+  .phase-chip.ign_delay .dot { background: var(--phase-ign); } .phase-chip.sustain .dot { background: var(--phase-sustain); } .phase-chip.coast .dot { background: var(--phase-coast); }
+
+  .mach-gauge svg { width: 100%; height: 8px; display: block; border-radius: 4px; overflow: hidden; }
+  .mach-gauge .mg-sub { fill: var(--good); opacity: .5; } .mach-gauge .mg-trans { fill: var(--warn); opacity: .5; } .mach-gauge .mg-sup { fill: var(--bad); opacity: .5; } .mach-gauge .mg-mark { fill: var(--ink); }
+
+  .fc-module { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border-radius: var(--r-3); border: 1px solid var(--line); background: var(--surface-2); }
+  .fc-module-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; border-bottom: 1px solid var(--line); background: var(--surface); padding: 7px 12px; }
+  .fc-module-title { font-size: var(--fs-0); font-weight: 520; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); display: flex; align-items: center; gap: 8px; }
+  .fc-module-extra { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--fs-1); color: var(--ink-3); }
+  .fc-module-body { min-height: 0; flex: 1; padding: 12px; }
+  .flight-config:focus-visible { box-shadow: var(--shadow), var(--focus-ring); }
+  .stage-tag { display: inline-flex; align-items: center; border-radius: var(--r-1); padding: 1px 6px; font-size: var(--fs-1); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--on-accent); }
+  .stage-tag.booster { background: var(--booster); } .stage-tag.sustainer { background: var(--sustainer); }
+}

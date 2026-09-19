@@ -27,5 +27,20 @@ export default defineConfig(async () => ({
       "/static": { target, changeOrigin: true },
     },
   },
-  build: { outDir: "dist", sourcemap: false, chunkSizeWarningLimit: 1500 },
+  build: {
+    outDir: "dist",
+    sourcemap: false,
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        // Vendor code in its own files, so an edit to the app never rewrites them.
+        manualChunks(id: string) {
+          if (id.includes("node_modules/echarts") || id.includes("node_modules/zrender")) return "echarts";
+          if (id.includes("node_modules/motion") || id.includes("node_modules/framer-motion")) return "motion";
+          if (id.includes("node_modules/@tanstack")) return "tanstack";
+          return undefined;
+        },
+      },
+    },
+  },
 }));

@@ -1,31 +1,44 @@
 import { useState } from "react";
+import { Cog, FileText, Gauge, Scale, Search, ShieldCheck, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
+import { ActionPanel, CmdPreview, ConfirmButton, FileRow, RunButton, StepPage, cancelRun } from "@/components/common";
+import { Bar, Button, Card, Check, Dot, Icon, Input, LiveDot, Problem, Select } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, dateTime, dur, fmt, sizeFmt } from "@/lib/format";
 import { gridSummary } from "@/lib/grid";
-import { useApp, useEta } from "@/lib/store";
+import { useAppState, useEta, useRefresh, useRunner } from "@/lib/store";
 import { RUN_STAGES, outcomeText, searchedSustainers } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { ActionPanel, Callout, CmdPreview, ConfirmButton, FileRow, RunButton, StepPage, cancelRun } from "@/components/common";
-import { Button } from "@/components/ui/button";
-import { Card, CardTitle } from "@/components/ui/card";
-import { Checkbox, Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
-import { Select } from "@/components/ui/select";
+import { useSubStart } from "@/store/live";
+
+const STAGE_ICON: Record<string, LucideIcon> = { motors: Cog, mass: Scale, characterize: Gauge, search: Search, verify: ShieldCheck, report: FileText };
 
 export function DiskCard() {
-  const { state: s, refresh } = useApp();
+  const s = useAppState();
+  const refresh = useRefresh();
   const dk = s?.disk;
   if (!dk) return null;
   const clean = async (what: string) => { try { const r = await api("/api/cleanup", { what }); toast.success(`removed ${r.removed} item(s), ${sizeFmt(r.bytes)}`); refresh(); } catch (e: any) { toast.error(e.message); } };
-  const Row = ({ label, info, btn }: { label: string; info: any; btn?: React.ReactNode }) => <div className="flex flex-wrap items-center gap-2 py-1 text-[13px]"><span className={cn("inline-block h-2.5 w-2.5 rounded-full", info.bytes > 200 * 1048576 ? "bg-warn" : "bg-faint")} /><span className="font-mono text-[12px]">{info.path}</span><span className="text-[12px] text-muted">{label}</span><span className="ml-auto text-[12px] text-muted">{sizeFmt(info.bytes)} · {info.files} file{info.files === 1 ? "" : "s"}</span>{btn}</div>;
-  return <div><h3 className="mb-1 flex justify-between text-[13px] font-semibold">Disk <span className="font-normal text-muted">{sizeFmt(dk.histories.bytes + dk.search_rows.bytes)} in the bulky outputs</span></h3>
-    <Row label="time histories (verify; the player simulates on demand without them)" info={dk.histories} btn={dk.histories.files ? <ConfirmButton label="Clear histories" armedLabel="Click again to delete" onClick={() => clean("histories")} /> : null} />
-    <Row label="every simulated row of the last search (debugging only)" info={dk.search_rows} btn={dk.search_rows.files ? <ConfirmButton label="Delete" armedLabel="Click again to delete" onClick={() => clean("search_rows")} /> : null} /></div>;
+  const Row = ({ label, info, btn }: { label: string; info: any; btn?: React.ReactNode }) => (
+    <div className="flex flex-wrap items-center gap-2.5 py-1.5 text-[13px]">
+      <Dot tone={info.bytes > 200 * 1048576 ? "warn" : "muted"} />
+      <span className="font-mono text-[12px]">{info.path}</span><span className="text-[12px] text-ink-3">{label}</span>
+      <span className="ml-auto text-[12px] text-ink-3 num">{sizeFmt(info.bytes)} · {info.files} file{info.files === 1 ? "" : "s"}</span>{btn}
+    </div>
+  );
+  return (
+    <div>
+      <h3 className="flex justify-between text-[13px] font-semibold">Disk <span className="font-normal text-ink-3 num">{sizeFmt(dk.histories.bytes + dk.search_rows.bytes)} in the bulky outputs</span></h3>
+      <Row label="time histories (verify; the player simulates on demand without them)" info={dk.histories} btn={dk.histories.files ? <ConfirmButton label="Clear histories" armedLabel="Click again to delete" onClick={() => clean("histories")} /> : null} />
+      <Row label="every simulated row of the last search (debugging only)" info={dk.search_rows} btn={dk.search_rows.files ? <ConfirmButton label="Delete" armedLabel="Click again to delete" onClick={() => clean("search_rows")} /> : null} />
+    </div>
+  );
 }
 
 export function OptimizePage() {
-  const { state: s, runner: r, subStart } = useApp();
+  const s = useAppState();
+  const r = useRunner();
+  const subStart = useSubStart();
   const eta = useEta(r, subStart);
   const [ps, setPs] = useState({ fresh: false, limit: "", boosters: "", unsolved: false, decel: false, backend: "" });
   if (!s || !r) return null;
@@ -34,27 +47,60 @@ export function OptimizePage() {
   if (ps.fresh) args.push("--fresh"); if (ps.backend) args.push("--backend", ps.backend); if (ps.limit) args.push("--limit", String(ps.limit)); if (ps.boosters.trim()) args.push("--boosters", ps.boosters.trim()); if (ps.unsolved) args.push("--include-unsolved"); if (ps.decel) args.push("--decel-subsonic");
   const running = r.running && RUN_STAGES.includes(r.stage || "");
   const backend = ps.backend || cfg.backend;
-  const desc: Record<string, string> = { motors: "parse .eng, stage motor files", mass: "pick the sustainers to search; OpenRocket: weight & CG per (booster, sustainer)", characterize: "one long-coast flight per (booster, sustainer) → Mach at burnout, eligibility", search: "ignition-delay sweep + bracket refinement per (booster, sustainer, profile)", verify: "full time history of each solution, rule check", report: "report.md, ranked designs, plots" };
+  const desc: Record<string, string> = { motors: "parse .eng, stage motor files", mass: "pick the sustainers to search; OpenRocket: weight & CG per (booster, sustainer)", characterize: "one long-coast flight per (booster, sustainer): Mach at burnout, eligibility", search: "ignition-delay sweep + bracket refinement per (booster, sustainer, profile)", verify: "full time history of each solution, rule check", report: "report.md, ranked designs, plots" };
   const g = gridSummary(cfg.profiles);
   const nSus = searchedSustainers(s.inputs.motors).size || 1;
   const pairs = (s.inputs.boosters.n || 0) * nSus;
-  const elig = s.results.eligibility && Object.keys(s.results.eligibility).length ? Object.values(s.results.eligibility as Record<string, any>).reduce((a: number, v: any) => a + v.eligible, 0) : null;
-  const pct = r.progress?.total ? (100 * r.progress.done) / r.progress.total : undefined;
-  const backendNote = backend === "rasaero_native" ? <Callout kind="info">RASAero's own engine flies every simulation on this machine, in parallel host processes. Exact RASAero numbers.</Callout> : <Callout kind="info">OpenRocket backend: preview only, its aerodynamics differ from RASAero.</Callout>;
+  const elig = s.results.eligibility && Object.keys(s.results.eligibility).length ? Object.values(s.results.eligibility as Record<string, any>).reduce((a: number, x: any) => a + x.eligible, 0) : null;
+  const pct = r.progress?.total ? r.progress.done / r.progress.total : undefined;
+  const backendNote = backend === "rasaero_native" ? <Problem tone="info">RASAero's own engine flies every simulation on this machine, in parallel host processes. Exact RASAero numbers.</Problem> : <Problem tone="info">OpenRocket backend: preview only, its aerodynamics differ from RASAero.</Problem>;
   const seen = new Set<string>();
-  return <StepPage id="optimize" summary={`For every booster: one long-coast flight characterizes the attached stack and decides which profiles it is eligible for; then, for each eligible (booster, profile), separation delays ${fmt(cfg.profiles.separation_delay_min_s)}–${fmt(cfg.profiles.separation_delay_max_s)} s and ignition delays ${fmt(cfg.profiles.ignition_delay_min_s)}–${fmt(cfg.profiles.ignition_delay_max_s)} s are searched until the apogee hits ${fmt(cfg.target.apogee_ft, 0)} ± ${fmt(cfg.target.tolerance_ft, 0)} ft. Solutions are re-flown with a full time history and checked against the profile rule.`}
-    action={<ActionPanel prereqs={[{ label: "inputs checked", ok: s.inputs.status === "ok" ? true : s.inputs.status === "error" ? false : "warn", hint: s.inputs.status === "error" ? "fix the input problems in step 1" : "inputs not checked since they changed" }, backend === "rasaero_native" ? { label: "RASAero engine", ok: s.engine?.ok ? true : false, hint: s.engine?.detail } : { label: "OpenRocket", ok: s.engine?.openrocket?.jar ? true : "warn", hint: "OpenRocket not found" }, { label: `mass ${s.mass.hardware_mass_lb != null ? s.mass.hardware_mass_lb + " lb" : ".ork"}`, ok: true }]}
-      buttons={running ? <Button variant="danger" onClick={cancelRun}>Cancel run</Button> : <RunButton stage="run" args={args} label="Run the optimizer (all stages)" primary confirmText={ps.fresh ? "Fresh run: the cached mass table, characterization, eligibility and designs in output/ will be deleted and recomputed. Continue?" : null} />}
-      options={<div className="flex flex-col gap-2"><div className="flex flex-wrap gap-3"><Checkbox label="Fresh run (recompute cached stages)" checked={ps.fresh} onChange={(e) => setPs({ ...ps, fresh: e.target.checked })} /><Checkbox label="Export a full time history for every design, not only the solved ones" checked={ps.unsolved} onChange={(e) => setPs({ ...ps, unsolved: e.target.checked })} /><Checkbox label='Also try "decelerate below Mach 0.9, then separate"' checked={ps.decel} onChange={(e) => setPs({ ...ps, decel: e.target.checked })} /></div>
-        <div className="flex flex-wrap items-center gap-3 text-[13px]"><label className="inline-flex items-center gap-1">backend <Select className="h-7" value={ps.backend} onChange={(e) => setPs({ ...ps, backend: e.target.value })}><option value="">config ({cfg.backend})</option><option value="rasaero_native">rasaero_native</option><option value="openrocket">openrocket (preview)</option></Select></label><label className="inline-flex items-center gap-1">only the first <Input type="number" min={1} className="h-7 w-16" value={ps.limit} placeholder="all" onChange={(e) => setPs({ ...ps, limit: e.target.value })} /> boosters</label><label className="inline-flex items-center gap-1">only <Input className="h-7 w-[200px]" value={ps.boosters} placeholder="e.g. 01,32,60 or labels" onChange={(e) => setPs({ ...ps, boosters: e.target.value })} /></label></div></div>}
-      notes={<>{backendNote}{o.stale && !running ? <Callout kind="warn"><b>Changed since the last run: </b><ul className="list-disc pl-5">{(o.changes || []).map((c: string, i: number) => <li key={i}>{c}</li>)}</ul>Tick "fresh run" so every stage is recomputed.</Callout> : null}<Callout kind="info"><b>Search size: </b>{pairs} (booster, sustainer) pairs{elig != null ? `, ${elig} eligible (pair, profile) candidates` : ""} × {g.sep.length} separation × {g.ign.length} ignition delays ≈ {fmt((elig != null ? elig : pairs) * g.sep.length * g.ign.length, 0)} flights in the coarse grid, plus refinement.{g.capped ? <span className="text-warn"> Separation step coarsened to {fmt(g.sepStep, 2)} s (the search caps it at 9 points).</span> : ""}{o.last_run ? ` The last full run took ${dur(o.last_run.elapsed_s)}.` : ""}</Callout></>} cmd={<CmdPreview stage="run" args={args} />} />}
-    how={<ol><li><b>motors</b> — parse the .eng files, stage them for RASAero.</li><li><b>mass</b> — pick the sustainers to search (sustainer_selection), then OpenRocket: sustainer and stack weight/CG per (booster, sustainer), scaled to the hardware mass.</li><li><b>characterize</b> — one long-coast flight per booster: peak boost Mach, Mach at burnout, how long after burnout the stack drops below Mach 1.2 / 0.9 → which profiles each booster is eligible for.</li><li><b>search</b> — per eligible (booster, profile) and per separation delay on the grid: a coarse ignition-delay grid, then bracket refinement until the apogee is within tolerance.</li><li><b>verify</b> — full time history of every solution; Mach at separation, velocity/altitude at ignition, max acceleration; pass/fail against the profile rule.</li><li><b>report</b> — report.md, ranked designs, plots.</li></ol>}>
-    <Card><CardTitle right={o.last_run ? `last full run: ${outcomeText(o.last_run)}, ${dur(o.last_run.elapsed_s)}, ${dateTime(o.last_run.finished)}` : "not run from this app yet"}>Stages</CardTitle>
-      <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">{o.substages.map((st: any) => { const isRun = running && (r.substage === st.name || r.stage === st.name); const prog = isRun ? [r.round ? `round ${r.round.round}` : null, r.progress?.total ? `${r.progress.done}/${r.progress.total}` : null].filter(Boolean).join(" · ") : ""; return <div key={st.name} className={cn("rounded-md border px-2 py-1.5", isRun ? "border-run bg-run-bg/40" : st.done ? (st.stale ? "border-warn/40 bg-warn-bg/30" : "border-ok/40 bg-ok-bg/30") : "border-line")} title={st.stale && st.changes?.length ? st.changes.join("\n") : ""}><div className="text-[13px] font-medium">{st.name} {prog ? <span className="text-[11px] text-muted">{prog}</span> : null}</div><div className="text-[11px] text-muted">{isRun ? "running…" : st.done ? (st.stale ? "out of date · " : "") + ago(st.mtime) : desc[st.name]}</div></div>; })}</div>
-      {running ? <div className="mt-3 flex items-center gap-3"><Progress className="max-w-[420px]" value={pct} indeterminate={pct === undefined} /><span className="text-[12px] text-muted">{r.substage || r.stage}{r.round ? ` · round ${r.round.round} (${fmt(r.round.rows, 0)} rows)` : ""} · {dur(r.elapsed_s)}{eta ? " · " + eta : ""}</span></div> : null}
-      <div className="my-3 border-t border-line" />
-      <p className="mb-2 text-[12px] text-muted">Run a single stage (it reads the previous stage's files from output/ and recomputes them if missing) — useful after changing the target (search → verify → report) or the profile rules (characterize onwards):</p>
-      <div className="flex flex-wrap gap-2">{["motors", "mass", "characterize", "search", "verify", "report"].map((st) => <RunButton key={st} stage={st} args={args.filter((a) => a !== "--fresh")} label={st} size="sm" />)}</div></Card>
-    <Card><CardTitle>Output files</CardTitle><div className="divide-y divide-line">{o.substages.flatMap((st: any) => st.files.filter((f: any) => !seen.has(f.path) && seen.add(f.path)).map((f: any) => <FileRow key={f.path} fi={f} stale={st.stale} />))}</div><div className="my-3 border-t border-line" /><DiskCard /></Card>
-  </StepPage>;
+  return (
+    <StepPage id="optimize" summary={`For every booster: one long-coast flight characterizes the attached stack and decides which profiles it is eligible for; then, for each eligible (booster, profile), separation delays ${fmt(cfg.profiles.separation_delay_min_s)}–${fmt(cfg.profiles.separation_delay_max_s)} s and ignition delays ${fmt(cfg.profiles.ignition_delay_min_s)}–${fmt(cfg.profiles.ignition_delay_max_s)} s are searched until the apogee hits ${fmt(cfg.target.apogee_ft, 0)} ± ${fmt(cfg.target.tolerance_ft, 0)} ft. Solutions are re-flown with a full time history and checked against the profile rule.`}
+      action={<ActionPanel prereqs={[{ label: "inputs checked", ok: s.inputs.status === "ok" ? true : s.inputs.status === "error" ? false : "warn", hint: s.inputs.status === "error" ? "fix the input problems in step 1" : "inputs not checked since they changed" }, backend === "rasaero_native" ? { label: "RASAero engine", ok: s.engine?.ok ? true : false, hint: s.engine?.detail } : { label: "OpenRocket", ok: s.engine?.openrocket?.jar ? true : "warn", hint: "OpenRocket not found" }, { label: `mass ${s.mass.hardware_mass_lb != null ? s.mass.hardware_mass_lb + " lb" : ".ork"}`, ok: true }]}
+        buttons={running ? <Button variant="danger" onClick={cancelRun}>Cancel run</Button> : <RunButton stage="run" args={args} label="Run the optimizer (all stages)" primary confirmText={ps.fresh ? "Fresh run: the cached mass table, characterization, eligibility and designs in output/ will be deleted and recomputed. Continue?" : null} />}
+        options={
+          <div className="flex flex-col gap-2.5">
+            <div className="flex flex-wrap gap-x-4 gap-y-2">
+              <Check checked={ps.fresh} onChange={(v) => setPs({ ...ps, fresh: v })}>Fresh run (recompute cached stages)</Check>
+              <Check checked={ps.unsolved} onChange={(v) => setPs({ ...ps, unsolved: v })}>Export a full time history for every design, not only the solved ones</Check>
+              <Check checked={ps.decel} onChange={(v) => setPs({ ...ps, decel: v })}>Also try "decelerate below Mach 0.9, then separate"</Check>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-[13px]">
+              <label className="inline-flex items-center gap-1.5">backend <Select sm className="!w-auto" value={ps.backend} onChange={(e) => setPs({ ...ps, backend: e.target.value })}><option value="">config ({cfg.backend})</option><option value="rasaero_native">rasaero_native</option><option value="openrocket">openrocket (preview)</option></Select></label>
+              <label className="inline-flex items-center gap-1.5">only the first <Input sm type="number" min={1} className="!w-16" value={ps.limit} placeholder="all" onChange={(e) => setPs({ ...ps, limit: e.target.value })} /> boosters</label>
+              <label className="inline-flex items-center gap-1.5">only <Input sm sans className="!w-[200px]" value={ps.boosters} placeholder="e.g. 01,32,60 or labels" onChange={(e) => setPs({ ...ps, boosters: e.target.value })} /></label>
+            </div>
+          </div>}
+        notes={<>{backendNote}{o.stale && !running ? <Problem tone="warn"><b>Changed since the last run: </b><ul className="list-disc">{(o.changes || []).map((c: string, i: number) => <li key={i}>{c}</li>)}</ul>Tick "fresh run" so every stage is recomputed.</Problem> : null}
+          <Problem tone="info"><b>Search size: </b>{pairs} (booster, sustainer) pairs{elig != null ? `, ${elig} eligible (pair, profile) candidates` : ""} × {g.sep.length} separation × {g.ign.length} ignition delays ≈ {fmt((elig != null ? elig : pairs) * g.sep.length * g.ign.length, 0)} flights in the coarse grid, plus refinement.{g.capped ? <span className="text-warn"> Separation step coarsened to {fmt(g.sepStep, 2)} s (the search caps it at 9 points).</span> : ""}{o.last_run ? ` The last full run took ${dur(o.last_run.elapsed_s)}.` : ""}</Problem></>}
+        cmd={<CmdPreview stage="run" args={args} />} />}
+      how={<ol><li><b>motors</b> — parse the .eng files, stage them for RASAero.</li><li><b>mass</b> — pick the sustainers to search (sustainer_selection), then OpenRocket: sustainer and stack weight/CG per (booster, sustainer), scaled to the hardware mass.</li><li><b>characterize</b> — one long-coast flight per booster: peak boost Mach, Mach at burnout, how long after burnout the stack drops below Mach 1.2 / 0.9, so which profiles each booster is eligible for.</li><li><b>search</b> — per eligible (booster, profile) and per separation delay on the grid: a coarse ignition-delay grid, then bracket refinement until the apogee is within tolerance.</li><li><b>verify</b> — full time history of every solution; Mach at separation, velocity/altitude at ignition, max acceleration; pass/fail against the profile rule.</li><li><b>report</b> — report.md, ranked designs, plots.</li></ol>}>
+      <Card title="Stages" sub={o.last_run ? `last full run: ${outcomeText(o.last_run)}, ${dur(o.last_run.elapsed_s)}, ${dateTime(o.last_run.finished)}` : "not run from this app yet"}>
+        <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+          {o.substages.map((st: any) => {
+            const isRun = running && (r.substage === st.name || r.stage === st.name);
+            const prog = isRun ? [r.round ? `round ${r.round.round}` : null, r.progress?.total ? `${r.progress.done}/${r.progress.total}` : null].filter(Boolean).join(" · ") : "";
+            const I = STAGE_ICON[st.name];
+            return (
+              <div key={st.name} className={cn("stat !min-w-0 !gap-1.5", isRun && "accent", st.done && !isRun && (st.stale ? "warn" : "ok"))} title={st.stale && st.changes?.length ? st.changes.join("\n") : ""}
+                   style={isRun ? { boxShadow: "inset 3px 0 var(--info), var(--glow-accent)" } : undefined}>
+                <div className="flex items-center gap-2">{isRun ? <LiveDot tone="info" /> : I ? <Icon of={I} size="sm" className="text-ink-3" /> : null}<span className="text-[13px] font-semibold text-ink">{st.name}</span>{prog ? <span className="text-[11px] text-ink-3 num ml-auto">{prog}</span> : null}</div>
+                <div className="text-[11px] text-ink-3 leading-snug whitespace-normal">{isRun ? "running…" : st.done ? (st.stale ? "out of date · " : "") + ago(st.mtime) : desc[st.name]}</div>
+              </div>
+            );
+          })}
+        </div>
+        {running ? <div className="flex items-center gap-3"><Bar className="max-w-[420px]" fraction={pct} indeterminate={pct === undefined} tone="info" /><span className="text-[12px] text-ink-2 num">{r.substage || r.stage}{r.round ? ` · round ${r.round.round} (${fmt(r.round.rows, 0)} rows)` : ""} · {dur(r.elapsed_s)}{eta ? " · " + eta : ""}</span></div> : null}
+        <div className="divider" />
+        <p className="text-[12px] text-ink-2">Run a single stage (it reads the previous stage's files from output/ and recomputes them if missing): useful after changing the target (search, verify, report) or the profile rules (characterize onwards):</p>
+        <div className="flex flex-wrap gap-2">{["motors", "mass", "characterize", "search", "verify", "report"].map((st) => <RunButton key={st} stage={st} args={args.filter((a) => a !== "--fresh")} label={<><Icon of={STAGE_ICON[st]} size="xs" />{st}</>} size="sm" />)}</div>
+      </Card>
+      <Card title="Output files" static>
+        <div className="divide-y divide-line-2">{o.substages.flatMap((st: any) => st.files.filter((f: any) => !seen.has(f.path) && seen.add(f.path)).map((f: any) => <FileRow key={f.path} fi={f} stale={st.stale} />))}</div>
+        <div className="divider" />
+        <DiskCard />
+      </Card>
+    </StepPage>
+  );
 }

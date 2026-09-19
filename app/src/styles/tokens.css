@@ -1,0 +1,110 @@
+/* Dark is the default and the design source; light is a twin, not an
+   inversion. Every colour used anywhere in the app is one of these. */
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* canvas */
+  --bg:        #05070c;
+  --bg-2:      #0a0e17;
+  --plot-bg:   #0b101a;
+  --surface:   rgba(255,255,255,.035);
+  --surface-2: rgba(255,255,255,.065);
+  --surface-3: rgba(255,255,255,.10);
+  --line:      rgba(255,255,255,.09);
+  --line-2:    rgba(255,255,255,.05);
+  --line-strong: rgba(255,255,255,.16);
+
+  /* ink */
+  --ink:   #eef2f7;
+  --ink-2: #9aa5b4;
+  --ink-3: #5f6a79;
+  --on-accent: #05070c;
+
+  /* accents */
+  --accent:      #5ec8ff;  --accent-2: rgba(94,200,255,.14);  --accent-glow: rgba(94,200,255,.55);
+  --good:        #3fdc9b;  --good-2:   rgba(63,220,155,.14);  --good-glow:   rgba(63,220,155,.45);
+  --warn:        #ff8f5e;  --warn-2:   rgba(255,143,94,.14);  --warn-glow:   rgba(255,143,94,.45);
+  --bad:         #ff5c6c;  --bad-2:    rgba(255,92,108,.14);  --bad-glow:    rgba(255,92,108,.45);
+  --info:        #b48cff;  --info-2:   rgba(180,140,255,.14); --info-glow:   rgba(180,140,255,.45);
+
+  /* domain aliases: never a new hue */
+  --run: var(--info);           --run-2: var(--info-2);
+  --status-solved: var(--good);       --status-solved-2: var(--good-2);
+  --status-over:   var(--warn);       --status-over-2:   var(--warn-2);
+  --status-under:  var(--info);       --status-under-2:  var(--info-2);
+  --status-unsolved: var(--bad);      --status-unsolved-2: var(--bad-2);
+  --status-none:   var(--ink-3);      --status-none-2:   var(--surface-2);
+  --phase-boost:   var(--warn);   --phase-sep: var(--info);  --phase-ign: var(--bad);
+  --phase-sustain: var(--accent); --phase-coast: var(--good);
+  --ev-liftoff: var(--ink-3); --ev-burnout: var(--phase-boost); --ev-sep: var(--phase-sep);
+  --ev-ign: var(--phase-ign); --ev-sus-burnout: var(--phase-sustain); --ev-apogee: var(--good);
+  --booster: var(--warn);  --sustainer: var(--accent);
+  --limit: var(--bad);
+  --target: var(--accent);
+  --band: rgba(63,220,155,.12);
+
+  /* series for overlays */
+  --series-1: #4f9ff5; --series-2: #ff7a45; --series-3: #2fd39a; --series-4: #a98bff;
+  --series-5: #ff5c6c; --series-6: #f5c04f; --series-7: #2fc7d3; --series-8: #f56fb8;
+
+  /* flame */
+  --flame-0: #fef08a; --flame-1: #ff8f5e; --flame-2: rgba(255,92,108,0);
+
+  /* elevation */
+  --shadow-sm: 0 1px 0 rgba(255,255,255,.04) inset, 0 2px 6px -2px rgba(0,0,0,.6);
+  --shadow:    0 1px 0 rgba(255,255,255,.04) inset, 0 20px 50px -30px rgba(0,0,0,.9);
+  --shadow-lg: 0 1px 0 rgba(255,255,255,.06) inset, 0 32px 70px -28px rgba(0,0,0,.95),
+               0 0 0 1px var(--line-strong);
+  --shadow-bar: 0 1px 0 rgba(255,255,255,.05) inset, 0 12px 40px -20px rgba(0,0,0,.9);
+  --glow-accent: 0 0 24px var(--accent-glow);
+  --glow-good:   0 0 18px var(--good-glow);
+  --glow-warn:   0 0 18px var(--warn-glow);
+  --glow-bad:    0 0 18px var(--bad-glow);
+  --focus-ring:  0 0 0 3px var(--accent-2);
+
+  /* shape */
+  --r-1: 6px;
+  --r-2: 10px;
+  --r-3: 14px;
+  --r-4: 16px;
+  --r-pill: 999px;
+
+  /* rhythm */
+  --gutter: 16px; --gap: 16px; --pad: 20px; --pad-tight: 14px;
+  --bar-h: 52px; --drawer-h: 44px;
+
+  /* layers */
+  --z-backdrop: -1; --z-drawer: 30; --z-bar: 40; --z-toast: 50; --z-dialog: 60; --z-tip: 70;
+
+  /* motion */
+  --dur-1: 120ms; --dur-2: 180ms; --dur-3: 260ms;
+  --ease-out: cubic-bezier(.2,.7,.2,1);
+  --ease-in-out: cubic-bezier(.4,0,.2,1);
+
+  /* type */
+  --sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --fs-0: 10.5px; --fs-1: 11px; --fs-2: 12px; --fs-3: 12.5px; --fs-4: 13px; --fs-5: 13.5px;
+  --fs-6: 15px; --fs-7: 18px; --fs-8: 22px; --fs-9: 26px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef1f6; --bg-2: #f7f8fb; --plot-bg: #ffffff;
+  --surface: rgba(255,255,255,.72); --surface-2: rgba(255,255,255,.95); --surface-3: rgba(15,23,42,.05);
+  --line: rgba(15,23,42,.11); --line-2: rgba(15,23,42,.06); --line-strong: rgba(15,23,42,.18);
+  --ink: #0f1520; --ink-2: #515c6b; --ink-3: #8b95a4; --on-accent: #ffffff;
+  --accent: #1a6fd6; --accent-2: rgba(26,111,214,.12); --accent-glow: rgba(26,111,214,.35);
+  --good: #15845a;  --good-2: rgba(21,132,90,.12);   --good-glow: rgba(21,132,90,.3);
+  --warn: #d9581f;  --warn-2: rgba(217,88,31,.12);   --warn-glow: rgba(217,88,31,.3);
+  --bad:  #d93a4a;  --bad-2: rgba(217,58,74,.12);    --bad-glow: rgba(217,58,74,.3);
+  --info: #6b46d6;  --info-2: rgba(107,70,214,.12);  --info-glow: rgba(107,70,214,.3);
+  --band: rgba(21,132,90,.10);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #7c5cd6;
+  --series-5: #e34948; --series-6: #c9960c; --series-7: #158fa0; --series-8: #d6479a;
+  --flame-0: #fde047; --flame-1: #f97316; --flame-2: rgba(239,68,68,0);
+  --shadow-sm: 0 1px 2px rgba(15,23,42,.05);
+  --shadow:    0 1px 2px rgba(15,23,42,.05), 0 12px 32px -18px rgba(15,23,42,.25);
+  --shadow-lg: 0 1px 2px rgba(15,23,42,.06), 0 24px 48px -20px rgba(15,23,42,.3), 0 0 0 1px var(--line-strong);
+  --shadow-bar: 0 1px 2px rgba(15,23,42,.05), 0 8px 28px -14px rgba(15,23,42,.25);
+}

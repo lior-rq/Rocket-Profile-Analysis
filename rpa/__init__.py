@@ -5,4 +5,4 @@ search over booster motors and staging delays that hits a target apogee with
 the booster separation outside the transonic band.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0-beta.1"

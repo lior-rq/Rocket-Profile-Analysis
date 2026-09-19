@@ -68,6 +68,6 @@ jobs:
           releaseName: "Rocket Profile Analysis ${{ github.ref_name }}"
           releaseBody: "See docs/INSTALL.md for first-launch notes (Gatekeeper / SmartScreen)."
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           includeUpdaterJson: true
           args: --target ${{ matrix.target }}

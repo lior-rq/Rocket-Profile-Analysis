@@ -27,6 +27,8 @@ export function stepStatus(s: AppState | null | undefined, id: string): StepStat
   }
   return ((s as any)[id] && (s as any)[id].status) || "todo";
 }
+/* The computed mass table, or null when absent or unreadable. */
+export const massTable = (s: AppState | null | undefined): any => (s?.mass?.table && !s.mass.table.error ? s.mass.table : null);
 export function outcomeText(r: { cancelled?: boolean; exit_code: number | null; stage: string | null }) {
   return r.cancelled ? "cancelled" : r.exit_code === 0 ? "finished" : r.exit_code === 1 && FINDINGS_STAGES.includes(r.stage || "") ? "finished with findings" : `failed (exit ${r.exit_code})`;
 }

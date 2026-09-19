@@ -4,7 +4,10 @@
 # Then:  cd app && npm run tauri build
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-if [ -n "${PYTHON:-}" ]; then PY=$PYTHON; elif [ -x "$ROOT/.venv/bin/python" ]; then PY="$ROOT/.venv/bin/python"; else PY=python; fi
+if [ -n "${PYTHON:-}" ]; then PY=$PYTHON; elif [ -x "$ROOT/.venv/bin/python" ]; then PY="$ROOT/.venv/bin/python"; else PY=$(command -v python3 || command -v python || true); fi
+# fail here, not after the multi-minute UI build
+[ -n "$PY" ] && "$PY" -c "import PyInstaller" 2>/dev/null || { echo "build_service.sh: need a python with PyInstaller (pip install -r requirements.txt); got '${PY:-none}'" >&2; exit 1; }
+echo "python: $PY"
 SKIP_UI=0; SKIP_HOST=0; SKIP_SMOKE=0
 for a in "$@"; do
   case "$a" in --skip-ui) SKIP_UI=1 ;; --skip-host) SKIP_HOST=1 ;; --skip-smoke) SKIP_SMOKE=1 ;; esac

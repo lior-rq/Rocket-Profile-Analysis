@@ -16,6 +16,7 @@ native/**/bin/
 native/**/obj/
 config.yaml
 input/
+*.ric
 SOP/
 *.local.md
 app/node_modules/

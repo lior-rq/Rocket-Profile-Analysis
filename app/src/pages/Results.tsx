@@ -243,7 +243,7 @@ function CustomizeTab(p: P) {
   const fq = useQuery({
     queryKey: ["custom-flight", r?.key, sep, ign, massParam, ver],
     queryFn: () => api(`/api/flight?booster=${encodeURIComponent(r.booster)}&sustainer=${encodeURIComponent(r.sustainer)}&profile=${encodeURIComponent(r.profile || "")}&sep=${sep}&ign=${ign}${massParam != null ? "&mass=" + massParam : ""}`) as Promise<HistoryFrame & { mass: any }>,
-    enabled: !!r && !!r.sustainer, staleTime: Infinity, placeholderData: keepPreviousData,
+    enabled: !!r && !!r.sustainer && !!mt, staleTime: Infinity, placeholderData: keepPreviousData, // no mass table: nothing to fly
   });
   const bq = useQuery({ ...historyQuery(r || {}, s, d), enabled: !!r });
   if (loading) return <div className="text-muted">Loading designs…</div>;
@@ -265,6 +265,7 @@ function CustomizeTab(p: P) {
       <ParamSlider label="hardware (dry) mass [lb]" hint={manual ? "manual mass model: set the masses in config" : baseMass == null ? "no mass table yet" : "both stages scale with it"} value={q.mass} min={1} max={baseMass ? Math.round(baseMass * 1.5) : 100} step={1} base={baseMass != null ? `mass table: ${fmt(baseMass, 1)}${isNum(mt?.hardware_mass_lb) ? "" : " (.ork)"}` : null} onChange={(v) => setQ({ ...q, mass: v })} disabled={manual || baseMass == null} />
     </div>
     <div className="flex flex-wrap items-center gap-2"><Button size="sm" disabled={!changed} onClick={() => setQ(init(r))}>Reset to the optimizer's values</Button>{!manual && q.mass != null && q.mass !== baseMass ? <Button size="sm" title="sets mass_model.hardware_mass_lb; the mass and optimize stages then need a re-run" onClick={saveMass}>Save {q.mass} lb to config.yaml</Button> : null}<span className="text-[12px] text-muted">optimizer: sep {fmt(r.sep_delay_s, 2)} s · ign {fmt(r.ign_delay_s, 2)} s · apogee {fmt(r.apogee_ft, 0)} ft{baseMass != null ? ` · dry mass ${fmt(baseMass, 1)} lb` : ""}</span></div>
+    {!mt ? <Callout kind="info">no mass table yet: run the mass stage (Inputs → Mass) to fly custom delays</Callout> : null}
     {fq.error ? <Callout kind="err">{(fq.error as Error).message}</Callout> : null}
     {fq.data ? <>
       <StatList grid className={cn(fq.isFetching && "opacity-60")}><Stat label="apogee" value={fmt(sm.apogee_ft, 0)} unit="ft" cls={isNum(dev) && Math.abs(dev) <= d.tolerance_ft ? "ok" : "warn"} /><Stat label="Δ target" value={signed(dev)} unit="ft" /><Stat label="Δ vs optimizer" value={isNum(sm.apogee_ft) && isNum(r.apogee_ft) ? signed(Math.round(sm.apogee_ft - r.apogee_ft) || 0) : "—"} unit="ft" /><Stat label="Mach @ sep" value={fmt(sm.mach_at_sep, 3)} cls={viol ? "err" : "ok"} /><Stat label="v @ ign" value={fmt(sm.vel_at_ign_fps, 0)} unit="fps" /><Stat label="alt @ ign" value={fmt(sm.alt_at_ign_ft, 0)} unit="ft" /><Stat label="max Mach" value={fmt(sm.max_mach, 3)} /><Stat label="max accel" value={fmt(sm.max_accel_g, 1)} unit="g" /><Stat label="t apogee" value={fmt(sm.t_apogee_s, 1)} unit="s" />{m ? <Stat label="pad weight" value={fmt(m.combined_wt_lb, 1)} unit="lb" sub={`sustainer ${fmt(m.sustainer_wt_lb, 1)} lb loaded`} /> : null}{m && isNum(m.sustainer_dry_lb) && isNum(m.booster_dry_lb) ? <Stat label="dry mass" value={fmt(m.sustainer_dry_lb + m.booster_dry_lb, 1)} unit="lb" sub={`sustainer ${fmt(m.sustainer_dry_lb, 1)} + booster ${fmt(m.booster_dry_lb, 1)}`} /> : null}</StatList>

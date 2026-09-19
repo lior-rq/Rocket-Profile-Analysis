@@ -6,6 +6,8 @@ async function collectErrors(page: Page) {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
   page.on("console", (m) => { if (m.type() === "error" && !/favicon|ERR_CONNECTION|net::/i.test(m.text())) errors.push("console: " + m.text()); });
+  // the console line for a failed fetch has no URL; record it here
+  page.on("response", (r) => { if (r.status() >= 400 && !/favicon/.test(r.url())) errors.push(`HTTP ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname}${new URL(r.url()).search}`); });
   return errors;
 }
 

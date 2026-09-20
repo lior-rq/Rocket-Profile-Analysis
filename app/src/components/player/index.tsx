@@ -59,7 +59,7 @@ export function useWidth<T extends HTMLElement>(min = 320): [React.RefObject<T |
   return [ref, w];
 }
 
-/* ---- the player -------------------------------------------------------------- */
+/* ---- the player ---------------------------------------------------------- */
 export type Player = { t: number; playing: boolean; speed: number; end: number; seek: (t: number) => void; preview: (t: number) => void; clearPreview: () => void; toggle: () => void; setSpeed: (x: number) => void; snap: Snap };
 export function usePlayer(end: number, T: T6, hist: Hist, key: string): Player {
   const [t, setT] = useState(0);
@@ -89,7 +89,7 @@ export function usePlayer(end: number, T: T6, hist: Hist, key: string): Player {
   return { t, playing, speed, end, snap, seek: (v) => { tRef.current = clampT(v); setT(tRef.current); setPreview(null); }, preview: (v) => setPreview(clampT(v)), clearPreview: () => setPreview(null), toggle: () => (playingRef.current ? pause() : play()), setSpeed: (x) => { speedRef.current = x; setSpeed(x); } };
 }
 
-/* ---- module panel: one bordered box per part of the player ---------------------- */
+/* ---- module panel: one bordered box per part of the player --------------- */
 export function Module({ title, extra, children, className, bodyClass }: { title: ReactNode; extra?: ReactNode; children: ReactNode; className?: string; bodyClass?: string }) {
   return <section className={cn("fc-module", className)}>
     <header className="fc-module-head"><div className="fc-module-title">{title}</div>{extra ? <div className="fc-module-extra">{extra}</div> : null}</header>
@@ -97,7 +97,7 @@ export function Module({ title, extra, children, className, bodyClass }: { title
   </section>;
 }
 
-/* ---- vehicle diagram ----------------------------------------------------------- */
+/* ---- vehicle diagram ----------------------------------------------------- */
 export function noseProfile(shape: string, L: number, R: number, n = 28) {
   const s = String(shape || "").toLowerCase(); const pts: [number, number][] = [];
   for (let i = 0; i <= n; i++) {
@@ -165,7 +165,7 @@ export function RocketDiagram({ r, dz, snap }: { r: any; dz: any; snap: Snap }) 
   return <div><div ref={ref} className="rocket-svg" data-phase={id} dangerouslySetInnerHTML={{ __html: svg }} /><div className="mt-1 text-[12px] text-ink-2">{PHASE_DEFS[snap.phase].name} · {what[id]} · t = {fmt(snap.t, snap.t < 60 ? 2 : 1)} s</div></div>;
 }
 
-/* ---- ascent track ---------------------------------------------------------------- */
+/* ---- ascent track -------------------------------------------------------- */
 const machZone = (mach: number | null, cfg: any) => !isNum(mach) ? "" : mach >= cfg.profiles.supersonic_min_mach ? "err" : mach <= cfg.profiles.subsonic_max_mach ? "ok" : "warn";
 export function AscentTrack({ r, cfg, d, T, snap }: { r: any; cfg: any; d: any; T: T6; snap: Snap }) {
   // The box is sized by the grid row (h-full); the SVG sits absolutely inside
@@ -214,7 +214,7 @@ export function AscentTrack({ r, cfg, d, T, snap }: { r: any; cfg: any; d: any; 
   </div>;
 }
 
-/* ---- staging timeline + thrust lane -------------------------------------------------- */
+/* ---- staging timeline + thrust lane -------------------------------------- */
 export function StagingTimeline({ dz, player, T }: { dz: any; player: Player; T: T6 }) {
   const [ref, W] = useWidth<HTMLDivElement>(320);
   const end = player.end, snap = player.snap;
@@ -264,7 +264,7 @@ export function StagingTimeline({ dz, player, T }: { dz: any; player: Player; T:
   </div>;
 }
 
-/* ---- thrust chart + motor panel ----------------------------------------------------- */
+/* ---- thrust chart + motor panel ------------------------------------------ */
 export function ThrustChart({ m, color, kind, T, snap }: { m: any; color: string; kind: "booster" | "sustainer"; T: T6; snap: Snap }) {
   const [ref, W] = useWidth<HTMLDivElement>(260);
   const [tip, setTip] = useState<{ x: number; y: number; t: number; f: number } | null>(null);
@@ -312,7 +312,7 @@ export function MotorPanel({ kind, m, err, r, T, snap }: { kind: "booster" | "su
   </Module>;
 }
 
-/* ---- the whole flight configuration card --------------------------------------------- */
+/* ---- the whole flight configuration card --------------------------------- */
 export function FlightConfig({ r, dz, hist, histKind, cfg, d, onPlayerChange }: { r: any; dz: any; hist: Hist; histKind: string | null; cfg: any; d: any; onPlayerChange?: (p: Player) => void }) {
   const b = dz.booster, s = dz.sustainer;
   const sLabel = s ? s.label : r.sustainer || "";

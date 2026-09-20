@@ -74,7 +74,7 @@
   --bar-h: 52px; --drawer-h: 44px;
 
   /* layers */
-  --z-backdrop: -1; --z-drawer: 30; --z-bar: 40; --z-toast: 50; --z-dialog: 60; --z-tip: 70;
+  --z-backdrop: 0; --z-drawer: 30; --z-bar: 40; --z-toast: 50; --z-dialog: 60; --z-tip: 70;
 
   /* motion */
   --dur-1: 120ms; --dur-2: 180ms; --dur-3: 260ms;

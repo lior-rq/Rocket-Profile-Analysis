@@ -363,7 +363,8 @@ class StateCollector:
             "inputs": inputs,
             "mass": mass,
             "optimize": optimize,
-            "results": {"status": "ok" if designs_summary.get("n") else "todo", **designs_summary},
+            # searched but empty: the run finished, the answer is "nothing fits"
+            "results": {"status": "ok" if designs_summary.get("n") else "warn" if designs_summary.get("searched") else "todo", **designs_summary},
             "confirm": confirm,
             "runner": runner.current(),
             "history": runner.history[-30:],
@@ -401,13 +402,17 @@ class StateCollector:
         return info
 
     def _designs_summary(self, out: Path, cfg) -> dict:
+        """The designs plus what characterize left behind. The shape is the same
+        with no designs.csv: a run that found nothing still has an explanation."""
         p = out / "designs.csv"
-        if not p.exists() or p.stat().st_size == 0:
-            return {"n": 0}
-        try:
-            df = pd.read_csv(p)
-        except Exception as e:
-            return {"n": 0, "error": str(e)}
+        df = pd.DataFrame()
+        error = None
+        searched = p.exists() and p.stat().st_size > 0
+        if searched:
+            try:
+                df = pd.read_csv(p)
+            except Exception as e:
+                error = str(e)
         target = float(cfg["target"]["apogee_ft"])
         tol = float(cfg["target"]["tolerance_ft"])
         counts = {k: int(v) for k, v in df["status"].value_counts().items()} if "status" in df else {}
@@ -433,6 +438,9 @@ class StateCollector:
             try:
                 cdf = pd.read_csv(cf)
                 chars = {"n": len(cdf), "mach_burnout_min": float(cdf["mach_burnout"].min()), "mach_burnout_max": float(cdf["mach_burnout"].max()), "t_burnout_min": float(cdf["t_burnout_s"].min()), "t_burnout_max": float(cdf["t_burnout_s"].max()), "events_inconsistent": int((~cdf["events_consistent"].astype(bool)).sum())}
+                if "max_mach_boost" in cdf:
+                    chars["max_mach_boost_min"] = float(cdf["max_mach_boost"].min())
+                    chars["max_mach_boost_max"] = float(cdf["max_mach_boost"].max())
             except Exception:
                 chars = None
         sust = None
@@ -445,7 +453,9 @@ class StateCollector:
                 sust = None
         return {
             "n": len(df),
-            "mtime": _mtime(p),
+            "searched": bool(searched),
+            "error": error,
+            "mtime": _mtime(p) if searched else None,
             "counts": counts,
             "n_solved": counts.get("solved", 0),
             "n_verified_ok": int(df["verified_ok"].fillna(False).astype(bool).sum()) if "verified_ok" in df else 0,

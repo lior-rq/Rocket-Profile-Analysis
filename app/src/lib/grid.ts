@@ -1,4 +1,4 @@
-/* The delay grids the search flies (rpa/search.py): separation capped at 9 points. */
+/* The delay grids the search flies (rpa/search.py); separation: max 9 pts. */
 export function sepGridPoints(lo: number, hi: number, step: number, maxPoints = 9): number[] {
   lo = +lo; hi = +hi; step = +step;
   if (!(hi - lo > 1e-9)) return [+lo.toFixed(2)];

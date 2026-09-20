@@ -11,14 +11,13 @@ import { Chart } from "./Chart";
 import { axisStyle, base, legendStyle, tickFmt, tipRows, type ECOption } from "./theme";
 
 export { Chart };
-export { SERIES as PALETTE_TOKENS } from "@/lib/tokens";
 
 export type Series = { name: string; x: (number | null)[]; y: (number | null)[]; color?: string; axis?: "y2"; dash?: boolean; width?: number; points?: boolean };
 /** A reference line; `color` is a token name such as "--limit". */
 export type Ref = { y: number; label?: string; color?: string; axis?: "y2" };
 export type Marker = { x: number; label: string; color?: string };
 
-/** Hooks the option memo to the theme so a flip rebuilds it from fresh tokens. */
+/** Ties an option memo to the theme: a flip rebuilds it from fresh tokens. */
 export const useChartTheme = () => useUi((s) => s.resolved);
 
 export function LineChart({ series, xLabel, yLabel, y2Label, refs = [], markers = [], markerLabels = true, height = 280, onHover, onLeave, points, legend = true }:

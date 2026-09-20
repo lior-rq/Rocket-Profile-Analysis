@@ -22,7 +22,7 @@ for (const file of walk(ROOT)) {
   if (ALLOW.has(rel)) continue;
   const lines = readFileSync(file, "utf8").split("\n");
   lines.forEach((line, i) => {
-    // a hex-looking id inside a string such as "#root" is not a colour: require 3/6/8 hex digits exactly
+    // "#root"-like ids are not colours: need exactly 3/6/8 hex digits
     for (const m of line.matchAll(RE)) {
       const t = m[0];
       if (t.startsWith("#") && ![4, 7, 9].includes(t.length)) continue;

@@ -1,5 +1,6 @@
 /* The live stream: runner status and the log, written only by the SSE
    client. Pages select the runner; the drawer alone selects the lines. */
+import { useMemo } from "react";
 import { create } from "zustand";
 import { type LogLine, type RunnerStatus } from "@/lib/api";
 
@@ -53,12 +54,12 @@ useLive.subscribe((s, prev) => {
   if (!running && timer !== null) { clearInterval(timer); timer = null; }
 });
 
-/** The runner with elapsed_s advanced to now. */
-export function useRunner(): RunnerStatus | null {
+/** The streamed runner with elapsed_s advanced to now. Null until the
+    stream has delivered one; lib/store's useRunner adds the fallback. */
+export function useLiveRunner(): RunnerStatus | null {
   const runner = useLive((s) => s.runner);
-  useLive((s) => s.tick);
-  if (runner && runner.running && runner.started) return { ...runner, elapsed_s: Date.now() / 1000 - runner.started };
-  return runner;
+  const tick = useLive((s) => s.tick);
+  // Memoised per tick, so consumers see a stable object between ticks.
+  return useMemo(() => (runner && runner.running && runner.started ? { ...runner, elapsed_s: Date.now() / 1000 - runner.started } : runner), [runner, tick]);
 }
-export const useBusy = () => useLive((s) => !!s.runner?.running);
 export const useSubStart = () => useLive((s) => s.subStart);

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, ArrowLeft, ArrowRight, Check as CheckIcon, ChevronRight, Cpu, ExternalLink, X } from "lucide-react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
 import { api, fileUrl } from "@/lib/api";
 import { ago, dateTime, dur, esc, fmt, isNum, sizeFmt } from "@/lib/format";
@@ -11,7 +11,7 @@ import { useAppState, useBusy, useRunner } from "@/lib/store";
 import { FINDINGS_STAGES, LIGHT_STAGES, STEPS, outcomeText, stepStatus, type FileInfo, type RunRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useUi } from "@/store/ui";
-import { Badge, Button, Card, ConfirmDialog, Dot, Icon, KV, LiveDot, Pill, Problem, RM, cx } from "./ui";
+import { Badge, Button, Card, ConfirmDialog, Dot, Icon, KV, LiveDot, Pill, Problem, RM, cx, spring } from "./ui";
 
 export { KV, Problem };
 
@@ -63,6 +63,23 @@ function HowCard({ children }: { children: ReactNode }) {
       </button>
       {open && <div className="text-[13px] leading-6 text-ink-2 [&_b]:text-ink [&_code]:font-mono [&_code]:text-[12px] [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5 [&_p+p]:mt-2">{children}</div>}
     </Card>
+  );
+}
+
+/** The sticky "Unsaved" bar over a form; `children` are its buttons. */
+export function UnsavedBar({ count, note, problems, children }: { count: number; note?: ReactNode; problems?: string[]; children: ReactNode }) {
+  return (
+    <AnimatePresence initial={false}>
+      {count ? (
+        <motion.div key="dirty" initial={{ opacity: 0, y: -8, height: 0 }} animate={{ opacity: 1, y: 0, height: "auto" }} exit={{ opacity: 0, y: -8, height: 0 }} transition={spring} className="sticky top-[76px] z-20">
+          <div className="glass-bar flex flex-wrap items-center gap-2 px-4 py-2.5 text-[13px]" style={{ boxShadow: "var(--shadow-bar), 0 0 0 1px var(--warn)" }}>
+            <b>Unsaved</b><span className="num">{count} change{count === 1 ? "" : "s"}</span>{note ? <span className="text-ink-3">{note}</span> : null}<span className="flex-1" />
+            {children}
+            {problems?.length ? <div className="basis-full text-bad">Fix before saving: {problems.join(" · ")}</div> : null}
+          </div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   );
 }
 

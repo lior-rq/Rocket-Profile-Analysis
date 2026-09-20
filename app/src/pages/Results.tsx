@@ -13,7 +13,7 @@ import { api, downloadFile, fileUrl } from "@/lib/api";
 import { dateTime, fmt, fmtFt, isNum, signed } from "@/lib/format";
 import { useAppState, useCached, useRefresh } from "@/lib/store";
 import { series as seriesTok, statusToken, v } from "@/lib/tokens";
-import { massTable } from "@/lib/types";
+import { emptySearchText, massTable } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_BADGE: Record<string, string> = { solved: "ok", overpowered: "warn", underpowered: "warn", unsolved: "err", infeasible: "todo" };
@@ -43,6 +43,8 @@ function historyQuery(r: any, s: any, d: any) {
 }
 
 const TABS = [["designs", "Designs"], ["matrix", "Matrix"], ["tradespace", "Trade space"], ["shortlist", "Shortlist"], ["customize", "Customize"], ["eligibility", "Eligibility"], ["characterization", "Characterization"], ["plots", "Plots"], ["previous", "Previous runs"], ["report", "Report"]] as const;
+/* Tabs that still have something to show when the search found nothing. */
+const EMPTY_TABS = ["eligibility", "characterization", "plots", "previous", "report"];
 
 export function ResultsPage() {
   const s = useAppState();
@@ -52,9 +54,11 @@ export function ResultsPage() {
   const [lb, setLb] = useState<string | null>(null);
   if (!s) return null;
   const d = s.results, cfg = s.config, mt = massTable(s);
-  const tab = search.tab || "designs";
+  const empty = emptySearchText(d, cfg);
+  const tabs = empty ? TABS.filter(([id]) => EMPTY_TABS.includes(id)) : TABS;
+  const tab = tabs.some(([id]) => id === search.tab) ? search.tab : tabs[0][0];
   const setSearch = (patch: Record<string, unknown>) => nav({ to: "/results", search: { ...search, ...patch } as any });
-  if (!d.n) return <StepPage id="results" summary="Designs, eligibility, characterization, time histories, plots and the written report."><Problem tone="info">No results yet — run the optimizer (step 2).</Problem></StepPage>;
+  if (!d.n && !empty) return <StepPage id="results" summary="Designs, eligibility, characterization, time histories, plots and the written report."><Problem tone="info">No results yet — run the optimizer (step 2).</Problem></StepPage>;
   const shortlist: string[] = d.shortlist || [];
   const nElig = d.eligibility ? Object.values(d.eligibility as Record<string, any>).reduce((a: number, x: any) => a + x.eligible, 0) : null;
   const setShortlist = async (body: any) => { try { await api("/api/shortlist", body); await refresh(); } catch (e: any) { toast.error(e.message); } };
@@ -80,9 +84,10 @@ export function ResultsPage() {
           {mt ? <Stat label="pad weight" value={`${fmt(mt.combined_wt_lb[0], 0)}–${fmt(mt.combined_wt_lb[1], 0)}`} unit="lb" /> : null}
         </StatGrid>} />}
       how={<p><b>Status: </b>solved = an ignition delay hits the target within tolerance · overpowered = apogee stays above the target even at the shortest allowed coast · underpowered = even the best coast falls short · unsolved = a bracket was found but did not converge. <b>Δ target</b> is apogee − target. <b>Matrix</b> shows every booster against every sustainer, <b>Trade space</b> plots apogee against the staging numbers, <b>Shortlist</b> compares the starred designs and confirms them in RASAero, and <b>Customize</b> re-flies one design live with your own delays and dry mass.</p>}>
+      {empty ? <Problem tone="warn"><b>The optimizer ran, but there are no designs. </b>{empty}</Problem> : null}
       <Card static>
         <Tabs value={tab} onValueChange={(x) => setSearch({ tab: x })}>
-          <div className="scroll-x -mx-1"><TabsList className="!flex-nowrap w-max mx-1">{TABS.map(([id, label]) => <TabsTrigger key={id} value={id} extra={extras[id]}>{label}</TabsTrigger>)}</TabsList></div>
+          <div className="scroll-x -mx-1"><TabsList className="!flex-nowrap w-max mx-1">{tabs.map(([id, label]) => <TabsTrigger key={id} value={id} extra={extras[id]}>{label}</TabsTrigger>)}</TabsList></div>
         </Tabs>
         <AnimatePresence mode="wait" initial={false}>
           <motion.div key={tab} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }} className="min-w-0">
@@ -396,12 +401,13 @@ function characterizeVersion(s: any) { const st = (s.optimize.substages || []).f
 function EligibilityTab({ s, cfg, search, setSearch }: P) {
   const t = useCached<any>("t:eligibility", "/api/table/eligibility", characterizeVersion(s));
   if (!t.data) return <Skeleton lines={6} />;
-  const eligOnly = search.all !== "1";
   const nElig = t.data.rows.filter((r: any) => r.eligible).length;
+  // Default: eligible rows only, unless there are none (then the reasons).
+  const eligOnly = search.all === "1" ? false : search.all === "0" ? true : nElig > 0;
   return (
     <div className="flex flex-col gap-2">
       <p className="text-[12px] text-ink-2">subsonic: the attached stack must stay below Mach {cfg.profiles.subsonic_max_mach} − {cfg.profiles.mach_margin} throughout boost. supersonic: separation must happen at or above Mach {cfg.profiles.supersonic_min_mach} + {cfg.profiles.mach_margin}; the physics limit is how long after burnout that is still true, and the searched separation window (sep min–max) is your window clipped to it.</p>
-      <DataTable columns={t.data.columns} rows={eligOnly ? t.data.rows.filter((r: any) => r.eligible) : t.data.rows} labels={{ sep_min_s: "sep min [s]", sep_max_s: "sep max [s]", sep_window_max_s: "physics limit [s]" }} format={{ eligible: (x) => <Badge status={x ? "ok" : "todo"}>{x ? "eligible" : "no"}</Badge> }} wrap={["reason"]} rowClass={(r) => (r.eligible ? "" : "dim")} maxHeight={560} tools={{ chooser: "results.eligibility", csv: "eligibility.csv", extra: <Check checked={eligOnly} onChange={(on) => setSearch({ all: on ? undefined : "1" })}><span className="text-[12px]">eligible only ({nElig} of {t.data.rows.length})</span></Check> }} />
+      <DataTable columns={t.data.columns} rows={eligOnly ? t.data.rows.filter((r: any) => r.eligible) : t.data.rows} labels={{ sep_min_s: "sep min [s]", sep_max_s: "sep max [s]", sep_window_max_s: "physics limit [s]" }} format={{ eligible: (x) => <Badge status={x ? "ok" : "todo"}>{x ? "eligible" : "no"}</Badge> }} wrap={["reason"]} rowClass={(r) => (r.eligible ? "" : "dim")} maxHeight={560} tools={{ chooser: "results.eligibility", csv: "eligibility.csv", extra: <Check checked={eligOnly} onChange={(on) => setSearch({ all: on ? "0" : "1" })}><span className="text-[12px]">eligible only ({nElig} of {t.data.rows.length})</span></Check> }} />
     </div>
   );
 }
@@ -438,15 +444,16 @@ function PlotsTab({ s, d, cfg, shortlist, setLb }: P) {
   const samples = useCached<any>("samples:" + set.map((r: any) => r.key).join(","), set.length ? "/api/samples?keys=" + encodeURIComponent(set.map((r: any) => r.key).join(",")) : null, d.mtime);
   const hqs = useQueries({ queries: set.map((r: any) => historyQuery(r, s, d)) }) as any[];
   const ct = useCached<any>("t:characterization", "/api/table/characterization", characterizeVersion(s));
-  if (loading || !samples.data) return <Skeleton height={300} />;
+  // No designs: the samples query is off, so do not wait for it.
+  if (loading || (set.length && !samples.data)) return <Skeleton height={300} />;
   const profiles = [...new Set(set.map((r: any) => r.profile))];
   const withH = set.map((r: any, i: number) => ({ name: `${r.booster} + ${r.sustainer} · ${r.profile}`, hist: hqs[i].data?.hist, color: colorOf(r), dash: hqs[i].data?.kind === "estimated" })).filter((x: any) => x.hist) as any[];
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-[12px] text-ink-2">{chosen.length ? `The ${chosen.length} shortlisted design(s).` : "The 8 designs closest to the target — star designs to choose which appear here."}</p>
-      <SeriesLegend items={set.map((r: any) => ({ name: `${r.booster} + ${r.sustainer}`, color: colorOf(r) }))} />
-      <div className="grid gap-3 lg:grid-cols-2">{profiles.map((pr) => <Section key={String(pr)} title={`Apogee vs ignition delay · ${String(pr)}`}><LineChart legend={false} series={set.filter((r: any) => r.profile === pr).map((r: any) => { const pts = (samples.data[r.key] || []).filter((q: any) => isNum(q[1]) && (q.length < 3 || Math.abs(q[2] - r.sep_delay_s) < 1e-6)).sort((a: any, b: any) => a[0] - b[0]); return { name: `${r.booster} + ${r.sustainer}`, x: pts.map((q: any) => q[0]), y: pts.map((q: any) => q[1]), points: true, color: colorOf(r) }; })} xLabel="ignition delay after separation [s] (at each design's separation delay)" yLabel="apogee [ft]" height={260} refs={[{ y: d.target_ft, label: "target", color: "--target" }]} /></Section>)}</div>
-      <Section title="Mach vs time" extra={withH.some((x) => x.dash) ? "dashed = on-demand estimate, not verified" : null}>{withH.length ? <HistoryOverlay items={withH} mode="mach" /> : hqs.some((q) => q.isLoading) ? <Skeleton height={300} /> : <p className="text-[12px] text-ink-3">no flight histories</p>}</Section>
+      <p className="text-[12px] text-ink-2">{chosen.length ? `The ${chosen.length} shortlisted design(s).` : set.length ? "The 8 designs closest to the target — star designs to choose which appear here." : "No designs to plot; the boost characterization and the report figures are below."}</p>
+      {set.length ? <SeriesLegend items={set.map((r: any) => ({ name: `${r.booster} + ${r.sustainer}`, color: colorOf(r) }))} /> : null}
+      <div className="grid gap-3 lg:grid-cols-2">{profiles.map((pr) => <Section key={String(pr)} title={`Apogee vs ignition delay · ${String(pr)}`}><LineChart legend={false} series={set.filter((r: any) => r.profile === pr).map((r: any) => { const pts = (samples.data?.[r.key] || []).filter((q: any) => isNum(q[1]) && (q.length < 3 || Math.abs(q[2] - r.sep_delay_s) < 1e-6)).sort((a: any, b: any) => a[0] - b[0]); return { name: `${r.booster} + ${r.sustainer}`, x: pts.map((q: any) => q[0]), y: pts.map((q: any) => q[1]), points: true, color: colorOf(r) }; })} xLabel="ignition delay after separation [s] (at each design's separation delay)" yLabel="apogee [ft]" height={260} refs={[{ y: d.target_ft, label: "target", color: "--target" }]} /></Section>)}</div>
+      {set.length ? <Section title="Mach vs time" extra={withH.some((x) => x.dash) ? "dashed = on-demand estimate, not verified" : null}>{withH.length ? <HistoryOverlay items={withH} mode="mach" /> : hqs.some((q) => q.isLoading) ? <Skeleton height={300} /> : <p className="text-[12px] text-ink-3">no flight histories</p>}</Section> : null}
       {ct.data && ct.data.rows.length ? <Section title="Boost characterization · Mach at burnout"><CharChart rows={ct.data.rows} cfg={cfg} metric="mach_burnout" height={220} /></Section> : null}
       {s.plots.length ? <div className="text-[12px] text-ink-3 flex flex-wrap items-center gap-2">Report figures (PNG, from the report stage): {s.plots.map((pl: any) => <Chip key={pl.path} sm onClick={() => setLb(fileUrl(pl.path, pl.mtime))}>{pl.name}</Chip>)}</div> : null}
     </div>

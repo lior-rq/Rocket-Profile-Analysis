@@ -13,7 +13,20 @@ function applyTheme(r: Resolved) {
   const el = document.documentElement;
   el.dataset.theme = r;
   el.style.colorScheme = r;
-  el.style.background = "";
+}
+
+/* Column choices once lived in localStorage as "rpa-cols:<chooser>". Fold
+   them into hiddenCols on first load, then drop the old keys. */
+function migrateLegacyCols(s: UiState) {
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (!k.startsWith("rpa-cols:")) continue;
+      const name = k.slice("rpa-cols:".length);
+      const cols = JSON.parse(localStorage.getItem(k) || "null");
+      if (Array.isArray(cols) && !(name in s.hiddenCols)) s.setHiddenCols(name, cols.filter((c) => typeof c === "string"));
+      localStorage.removeItem(k);
+    }
+  } catch { /* storage unavailable */ }
 }
 
 interface UiState {
@@ -66,6 +79,7 @@ export const useUi = create<UiState>()(persist((set, get) => ({
     try { legacy = localStorage.getItem("rpa-theme"); } catch { /* ignore */ }
     const t = (legacy === "light" || legacy === "dark" || legacy === "auto") && s.theme === "auto" && legacy !== "auto" ? (legacy as ThemeChoice) : s.theme;
     s.setTheme(t);
+    migrateLegacyCols(s);
   },
 }));
 
@@ -80,7 +94,7 @@ if (typeof matchMedia !== "undefined") {
   });
 }
 if (typeof document !== "undefined") {
-  // First paint already has data-theme from the boot script; sync the store to it.
+  // The boot script set data-theme before first paint; the store follows it.
   const cur = document.documentElement.dataset.theme === "light" ? "light" : "dark";
   useUi.setState({ resolved: cur });
 }

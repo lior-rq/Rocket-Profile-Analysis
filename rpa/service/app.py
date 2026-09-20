@@ -73,6 +73,14 @@ def create_app(svc: Service) -> FastAPI:
             return Response(NO_UI, media_type="text/html")
         return FileResponse(str(d / "index.html"), media_type="text/html", headers={"Cache-Control": "no-store"})
 
+    @app.get("/favicon.svg")
+    async def favicon():
+        d = ui_dir()
+        p = d / "favicon.svg" if d else None
+        if p is None or not p.is_file():
+            return J({"error": "not found"}, 404)
+        return FileResponse(str(p), media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
+
     @app.get("/assets/{rest:path}")
     async def assets(rest: str):
         d = ui_dir()

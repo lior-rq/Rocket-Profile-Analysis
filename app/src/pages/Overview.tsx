@@ -2,10 +2,10 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, ScrollText } from "lucide-react";
 import { motion } from "motion/react";
 import { EngineCard, RunHistory, StepHead } from "@/components/common";
-import { AnimatedNumber, Badge, Button, Card, Icon, KV, LiveDot, Problem, Stat, StatGrid, rise } from "@/components/ui";
+import { AnimatedNumber, Badge, Button, Card, Icon, KV, LiveDot, Problem, Stat, StatGrid, rise, statusRing } from "@/components/ui";
 import { dur, fmt, fmtFt } from "@/lib/format";
 import { useAppState } from "@/lib/store";
-import { STEPS, stepStatus } from "@/lib/types";
+import { STEPS, emptySearchText, stepStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useUi } from "@/store/ui";
 
@@ -15,8 +15,6 @@ function sustainerSummary(m: any) {
   if (sel.mode === "best" || !sel.mode) return `${m.sustainer.label} (${fmt(m.sustainer.total_impulse_ns, 0)} N·s, highest of ${m.n_sustainer_candidates})`;
   return `${sel.mode}: picked at the characterize step (${m.n_sustainer_candidates} candidates)`;
 }
-
-const RING: Record<string, string> = { ok: "done", partial: "warn", warn: "warn", stale: "warn", error: "bad", running: "run" };
 
 export function OverviewPage() {
   const s = useAppState();
@@ -32,6 +30,8 @@ export function OverviewPage() {
   const why = (x: any) => { const t = st(x.id); if (t === "stale" && x.id === "optimize") return changesText(s.optimize.changes) || " — its inputs changed since it last ran"; if (t === "unchecked") return (changesText(s.inputs.changes) || " — inputs changed") + ", press Check"; return ({ stale: " — its inputs changed since it last ran", error: " — there is a problem to fix", todo: "" } as any)[t] || ""; };
   const nextText = running ? `Step ${running.n} (${running.title}) is running.` : blocking ? (blocking.id === "results" ? "Run the optimizer (step 2) to get results." : `step ${blocking.n}, ${blocking.title}${why(blocking)}.`) : attention.length ? `All steps have been run; step ${attention[0].n} (${attention[0].title}) needs a look.` : "Every step is complete. Re-run steps whose inputs changed (they are flagged \"out of date\").";
   const headline = () => {
+    const empty = emptySearchText(d, cfg);
+    if (empty) return <Problem tone="warn"><b>The optimizer ran, but there are no designs. </b>{empty} <Link to="/results" search={{ tab: "eligibility" } as any}>Eligibility</Link> lists the reason per pair.</Problem>;
     if (!d.n) return <Problem tone="info"><b>No results yet. </b>Follow the steps in order; the optimizer runs on this machine with RASAero's own engine.</Problem>;
     const b = d.best, tgt = d.target_ft, c = d.counts || {};
     if (d.n_solved) return <Problem tone="ok"><b>{d.n_solved} design(s) hit {fmtFt(tgt)} ± {fmt(d.tolerance_ft, 0)} ft</b> — {d.n_verified_ok} verified. Best: <b>{b.booster} · {b.profile}</b> sep {b.sep_delay_s}s, ign {b.ign_delay_s}s to {fmtFt(b.apogee_ft)}.</Problem>;
@@ -65,7 +65,7 @@ export function OverviewPage() {
             <motion.div key={x.id} variants={rise} className="min-w-0">
               <Link to={x.path} className="glass card tight hover:no-underline text-ink block h-full !gap-2">
                 <div className="flex items-center gap-2">
-                  {t === "running" ? <LiveDot tone="info" /> : <span className={cn("step-ring", RING[t])}>{x.n}</span>}
+                  {t === "running" ? <LiveDot tone="info" /> : <span className={cn("step-ring", statusRing(t))}>{x.n}</span>}
                   <span className="micro">step {x.n}</span>
                 </div>
                 <div className="text-[13.5px] font-semibold leading-tight">{x.title}</div>
@@ -80,7 +80,7 @@ export function OverviewPage() {
       <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <Card title="Headline result">
           {headline()}
-          {d.n ? (
+          {d.n || d.searched ? (
             <StatGrid>
               <Stat label="target" value={fmt(d.target_ft, 0)} unit="ft" />
               <Stat label="designs" value={d.n} />
@@ -91,7 +91,7 @@ export function OverviewPage() {
               {Object.entries(d.eligibility || {}).map(([p, x]: any) => <Stat key={p} label={`${p} eligible`} value={`${x.eligible}/${x.total}`} />)}
             </StatGrid>
           ) : null}
-          {d.n ? <div><Button variant="ghost" asChild><Link to="/results">Open results<Icon of={ArrowRight} size="sm" /></Link></Button></div> : null}
+          {d.n || d.searched ? <div><Button variant="ghost" asChild><Link to="/results">Open results<Icon of={ArrowRight} size="sm" /></Link></Button></div> : null}
         </Card>
         <div className="flex flex-col gap-4 min-w-0">
           <Card title="Vehicle & target" actions={<Link to="/inputs" className="link">edit<Icon of={ArrowRight} size="xs" /></Link>}>

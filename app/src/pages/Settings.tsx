@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
-import { RevealButton, StepHead } from "@/components/common";
-import { Button, Card, Input, NumberField, Problem, Select, Tabs, TabsContent, TabsList, TabsTrigger, spring } from "@/components/ui";
+import { RevealButton, StepHead, UnsavedBar } from "@/components/common";
+import { Button, Card, Input, NumberField, Problem, Select, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useAppState, useCached, useRefresh } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -55,16 +54,9 @@ export function SettingsPage() {
   return (
     <>
       <StepHead title="Settings" sub={<>Every key of <code>config.yaml</code>, grouped by section, with its type taken from the current value; saving writes the file in place with its comments intact. The Inputs page covers the everyday ones with more guidance.</>} />
-      <AnimatePresence initial={false}>
-        {dirty ? (
-          <motion.div key="dirty" initial={{ opacity: 0, y: -8, height: 0 }} animate={{ opacity: 1, y: 0, height: "auto" }} exit={{ opacity: 0, y: -8, height: 0 }} transition={spring} className="sticky top-[76px] z-20 overflow-visible">
-            <div className="glass-bar ring-warn flex flex-wrap items-center gap-2 px-4 py-2.5 text-[13px]" style={{ boxShadow: "var(--shadow-bar), 0 0 0 1px var(--warn)" }}>
-              <b>Unsaved</b><span className="num">{dirty} change{dirty === 1 ? "" : "s"}</span><span className="flex-1" />
-              <Button variant="primary" size="sm" onClick={save}>Save</Button><Button size="sm" onClick={() => setEdits({})}>Discard</Button>
-            </div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      <UnsavedBar count={dirty}>
+        <Button variant="primary" size="sm" onClick={save}>Save</Button><Button size="sm" onClick={() => setEdits({})}>Discard</Button>
+      </UnsavedBar>
       <Card static>
         <Tabs defaultValue={sections[0]}>
           <TabsList>{sections.map((sec) => <TabsTrigger key={sec} value={sec} extra={fields.filter((f) => f.key.split(".")[0] === sec && f.key in edits).length || null}>{sec}</TabsTrigger>)}<TabsTrigger value="__raw">raw YAML</TabsTrigger></TabsList>

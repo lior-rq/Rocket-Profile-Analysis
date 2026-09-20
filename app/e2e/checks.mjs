@@ -58,7 +58,7 @@ if (light0 != null && light0 < 160) fails.push(`light first paint too dark: ${li
   await ctx.close();
 }
 
-// 4. reduced motion: cards are fully opaque and in place 100 ms after navigation
+// 4. reduced motion: cards fully opaque and in place 100 ms after navigation
 {
   const ctx = await b.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: "dark", reducedMotion: "reduce" });
   const p = await ctx.newPage();

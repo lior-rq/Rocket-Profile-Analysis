@@ -24,10 +24,3 @@ export const EVENT_TOKENS = {
 export const PHASE_TOKENS: Record<string, string> = {
   boost: "--phase-boost", sep_delay: "--phase-sep", ign_delay: "--phase-ign", sustain: "--phase-sustain", coast: "--phase-coast",
 };
-
-/** Bumps when the theme flips, so canvases re-read their tokens. */
-export function onThemeChange(fn: () => void): () => void {
-  const mo = new MutationObserver((ms) => { if (ms.some((m) => m.attributeName === "data-theme")) fn(); });
-  mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-  return () => mo.disconnect();
-}

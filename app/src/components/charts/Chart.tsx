@@ -13,14 +13,13 @@ echarts.use([LineChart, ScatterChart, BarChart, GridComponent, TooltipComponent,
 
 export type Events = Record<string, (e: any) => void>;
 
-export function Chart({ option, height = 280, className, onEvents, freshKey }:
-  { option: ECOption; height?: number; className?: string; onEvents?: Events; freshKey?: string | number }) {
+export function Chart({ option, height = 280, className, onEvents }:
+  { option: ECOption; height?: number; className?: string; onEvents?: Events }) {
   const ref = useRef<HTMLDivElement>(null);
   const inst = useRef<echarts.ECharts | null>(null);
   const theme = useUi((s) => s.resolved);
   const handlers = useRef<Events | undefined>(onEvents);
   handlers.current = onEvents;
-  const drawn = useRef<string | number | undefined>(undefined);
 
   useEffect(() => {
     const node = ref.current;
@@ -39,10 +38,8 @@ export function Chart({ option, height = 280, className, onEvents, freshKey }:
   useEffect(() => {
     const chart = inst.current;
     if (!chart) return;
-    const fresh = freshKey !== undefined && drawn.current !== freshKey;
-    drawn.current = freshKey;
-    chart.setOption({ ...option, animation: fresh ? true : (option as any).animation ?? false }, { notMerge: true, lazyUpdate: true });
-  }, [option, theme, freshKey]);
+    chart.setOption({ ...option, animation: (option as any).animation ?? false }, { notMerge: true, lazyUpdate: true });
+  }, [option, theme]);
 
   return <div ref={ref} className={cn("chart", className)} style={{ height, minHeight: height }} />;
 }

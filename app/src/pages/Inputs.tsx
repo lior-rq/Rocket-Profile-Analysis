@@ -1,10 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Folder, FolderOpen, FolderSearch, FileBox, FileCode2, Upload, X } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
-import { ActionPanel, CmdPreview, RunButton, StepPage } from "@/components/common";
-import { Badge, Button, Card, Check, DropZone, Field, Icon, Input, KV, NumberField, Pill, Problem, Select, Stat, StatGrid, Tabs, TabsContent, TabsList, TabsTrigger, spring } from "@/components/ui";
+import { ActionPanel, CmdPreview, RunButton, StepPage, UnsavedBar } from "@/components/common";
+import { Badge, Button, Card, Check, DropZone, Field, Icon, Input, KV, NumberField, Pill, Problem, Select, Stat, StatGrid, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, dateTime, fmt, isNum } from "@/lib/format";
 import { gridSummary } from "@/lib/grid";
@@ -79,19 +78,11 @@ export function InputsPage() {
               : <Problem tone="info">Not checked yet — press <b>Check inputs</b>. The output appears in the activity drawer below.</Problem>}</>}
           cmd={<CmdPreview stage="check" />} />}
         how={<div><p>Everything on this page lives in <code>config.yaml</code> (edited in place, comments kept). Files can be anywhere on disk; paths inside the project are stored relative to it.</p><ul><li><b>Vehicle & site</b> — the .ork (mass distribution) and .CDX1 (geometry, launch site); launch-site overrides.</li><li><b>Motors</b> — folders and .eng/.ric files for the booster and sustainer candidates.</li><li><b>Mass</b> — the hardware (dry) mass; the .ork only supplies the split and the CGs.</li><li><b>Target & rules</b> — target apogee, tolerance, the transonic-separation rules and the simulation backend.</li></ul><p><b>Check</b> parses the motors, reads the CDX1 and confirms the engine is available.</p></div>}>
-        <AnimatePresence initial={false}>
-          {dirty ? (
-            <motion.div key="dirty" initial={{ opacity: 0, y: -8, height: 0 }} animate={{ opacity: 1, y: 0, height: "auto" }} exit={{ opacity: 0, y: -8, height: 0 }} transition={spring} className="sticky top-[76px] z-20">
-              <div className="glass-bar flex flex-wrap items-center gap-2 px-4 py-2.5 text-[13px]" style={{ boxShadow: "var(--shadow-bar), 0 0 0 1px var(--warn)" }}>
-                <b>Unsaved</b><span className="num">{dirty} change{dirty === 1 ? "" : "s"}</span><span className="text-ink-3">written to config.yaml with its comments intact</span><span className="flex-1" />
-                <Button variant="primary" size="sm" disabled={problems.length > 0} onClick={() => save(false)}>Save</Button>
-                <Button size="sm" disabled={problems.length > 0 || busy} onClick={() => save(true)}>Save & check</Button>
-                <Button size="sm" variant="chip" onClick={() => setEdits({})}>Discard</Button>
-                {problems.length ? <div className="basis-full text-bad">Fix before saving: {problems.join(" · ")}</div> : null}
-              </div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+        <UnsavedBar count={dirty} note="written to config.yaml with its comments intact" problems={problems}>
+          <Button variant="primary" size="sm" disabled={problems.length > 0} onClick={() => save(false)}>Save</Button>
+          <Button size="sm" disabled={problems.length > 0 || busy} onClick={() => save(true)}>Save & check</Button>
+          <Button size="sm" variant="chip" onClick={() => setEdits({})}>Discard</Button>
+        </UnsavedBar>
         <Card static>
           <Tabs value={tab} onValueChange={(v) => nav({ to: "/inputs", search: { tab: v } as any })}>
             <TabsList>

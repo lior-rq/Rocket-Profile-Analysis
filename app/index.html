@@ -7,13 +7,13 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Rocket Profile Analysis</title>
     <script>
-      /* Theme before first paint: no white frame. "auto" follows the OS. */
+      /* Theme before first paint: color-scheme picks the canvas colour until
+         tokens.css lands, so there is no white frame. "auto" follows the OS. */
       try {
         var t = localStorage.getItem("rpa-theme");
         var dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.dataset.theme = dark ? "dark" : "light";
         document.documentElement.style.colorScheme = dark ? "dark" : "light";
-        document.documentElement.style.background = dark ? "#05070c" : "#eef1f6";
       } catch (e) {}
     </script>
   </head>

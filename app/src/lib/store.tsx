@@ -3,7 +3,7 @@
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useLive, useRunner } from "@/store/live";
+import { useLive, useLiveRunner } from "@/store/live";
 import { useUi } from "@/store/ui";
 import { api, connectEvents, type LogLine, type RunnerStatus } from "./api";
 import { dur } from "./format";
@@ -11,6 +11,20 @@ import { outcomeText, type AppState } from "./types";
 
 export function useStateQuery() {
   return useQuery({ queryKey: ["state"], queryFn: () => api<AppState>("/api/state"), refetchInterval: 15000, retry: 1 });
+}
+
+/** The runner: the live stream's, or the one /api/state last reported
+    until the stream is up. */
+export function useRunner(): RunnerStatus | null {
+  const live = useLiveRunner();
+  const q = useStateQuery();
+  return live ?? q.data?.runner ?? null;
+}
+/** Whether a stage is running; does not tick with elapsed_s. */
+export function useBusy(): boolean {
+  const live = useLive((s) => s.runner);
+  const q = useStateQuery();
+  return !!(live ?? q.data?.runner)?.running;
 }
 
 /** The project state with the live runner folded in. */
@@ -27,8 +41,6 @@ export function useRefresh() {
   const qc = useQueryClient();
   return async () => { await qc.invalidateQueries({ queryKey: ["state"] }); };
 }
-export { useBusy, useRunner } from "@/store/live";
-
 /* Fetch-once cache keyed by a version (file mtime) or a TTL. */
 export function useCached<T = any>(key: string, url: string | null, version?: unknown, ttl = 4000) {
   return useQuery<T>({ queryKey: ["cached", key, version ?? null], queryFn: () => api<T>(url as string), enabled: !!url, staleTime: version !== undefined ? Infinity : ttl, gcTime: 10 * 60 * 1000 });

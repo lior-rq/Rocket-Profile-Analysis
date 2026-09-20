@@ -68,16 +68,16 @@
 .micro { font-size: var(--fs-0); font-weight: 520; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
 .truncate-1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Backdrop: a slow drift of two glows and a faint grid, so the page has depth
-   without a single pixel of it competing with a chart. */
+/* Backdrop: two glows and a faint grid, so the page has depth without a
+   single pixel of it competing with a chart. Static: it never repaints.
+   It is the shell frame's own bottom layer (z 0), under the content at
+   z 1, so no html/body background can cover it. */
 .backdrop {
   position: fixed; inset: 0; z-index: var(--z-backdrop); pointer-events: none;
   background:
     radial-gradient(900px 600px at 15% -10%, var(--accent-2), transparent 60%),
     radial-gradient(700px 500px at 110% 20%, var(--warn-2), transparent 60%),
     var(--bg);
-  background-size: 130% 130%, 130% 130%, auto;
-  animation: drift 40s var(--ease-in-out) infinite alternate;
 }
 .backdrop::after {
   content: ""; position: absolute; inset: 0;
@@ -89,15 +89,10 @@
   mask-image: radial-gradient(ellipse at 50% 0%, black 20%, transparent 75%);
   opacity: .45;
 }
-@keyframes drift {
-  from { background-position: 0% 0%, 100% 0%, 0 0; }
-  to   { background-position: 6% 4%, 94% 8%, 0 0; }
-}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .001ms !important; animation-iteration-count: 1 !important;
     transition-duration: .001ms !important; scroll-behavior: auto !important;
   }
-  .backdrop { animation: none; }
 }

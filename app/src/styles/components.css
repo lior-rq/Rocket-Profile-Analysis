@@ -1,15 +1,14 @@
 @layer components {
   /* ---------------------------------------------------------- glass */
   /* Near-opaque, so the backdrop's grid never reaches a chart or a table;
-     the glass is in the edge highlight and the blur at the border. */
+     the glass is in the edge highlight. No backdrop-filter here: cards are
+     many and always on screen, and a blur of a 6% show-through is unseen. */
   .glass {
     background: var(--bg-2);
     background: color-mix(in srgb, var(--bg-2) 94%, transparent);
     border: 1px solid var(--line);
     border-radius: var(--r-4);
     box-shadow: var(--shadow);
-    -webkit-backdrop-filter: blur(18px) saturate(1.2);
-    backdrop-filter: blur(18px) saturate(1.2);
   }
   /* Sticky bars: opaque enough that scrolled content never reads through. */
   .glass-bar {
@@ -31,10 +30,12 @@
   }
 
   /* ----------------------------------------------------------- card */
+  /* The hover lift uses `translate`, not `transform`: Motion owns the inline
+     transform for the entrance and leaves it set, which would win over CSS. */
   .card {
     position: relative; isolation: isolate;
     padding: var(--pad); display: flex; flex-direction: column; gap: 12px; min-width: 0;
-    transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out),
+    transition: translate var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out),
                 border-color var(--dur-2) var(--ease-out);
   }
   .card.tight { padding: var(--pad-tight); }
@@ -44,9 +45,9 @@
     opacity: 0; transition: opacity var(--dur-3) var(--ease-out); z-index: -1;
   }
   @media (hover: hover) and (pointer: fine) {
-    .card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: var(--line-strong); }
+    .card:hover { translate: 0 -2px; box-shadow: var(--shadow-lg); border-color: var(--line-strong); }
     .card:hover::before { opacity: 1; }
-    .card.static:hover { transform: none; box-shadow: var(--shadow); border-color: var(--line); }
+    .card.static:hover { translate: none; box-shadow: var(--shadow); border-color: var(--line); }
     .card.static:hover::before { opacity: 0; }
   }
   .card.ring-accent { box-shadow: var(--shadow), 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
@@ -209,9 +210,10 @@
   .data-table th { position: sticky; top: 0; z-index: 1; background: var(--bg-2);
     color: var(--ink-3); font-size: var(--fs-1); font-weight: 520; letter-spacing: .04em; text-transform: uppercase;
     box-shadow: inset 0 -1px var(--line); border-bottom: 0; }
-  .data-table th.sortable { cursor: pointer; user-select: none; }
+  .data-table th.sortable { user-select: none; }
   .data-table th.sortable:hover, .data-table th.on { color: var(--accent); }
-  .data-table th .th-inner { display: inline-flex; align-items: center; gap: 4px; }
+  .data-table th .th-inner { display: flex; width: 100%; align-items: center; gap: 4px;
+    font-weight: inherit; text-align: inherit; border-radius: var(--r-1); }
   .data-table th.n .th-inner { flex-direction: row-reverse; }
   .data-table .n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
   .data-table td.wrap { white-space: normal; min-width: 240px; }

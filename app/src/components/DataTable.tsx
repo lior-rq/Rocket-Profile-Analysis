@@ -77,9 +77,10 @@ export function DataTable({ columns, rows, labels = {}, format = {}, hide = [], 
                 {hg.headers.map((h) => {
                   const c = h.column.id; const s = h.column.getIsSorted();
                   return (
-                    <th key={h.id} className={cn("sortable", numCols.has(c) && "n", s && "on", c === sticky && "sticky")} aria-sort={s ? (s === "asc" ? "ascending" : "descending") : "none"}
-                        onClick={h.column.getToggleSortingHandler()}>
-                      <span className="th-inner">{flexRender(h.column.columnDef.header, h.getContext())}<Icon of={s === "asc" ? ArrowUp : s === "desc" ? ArrowDown : ChevronsUpDown} size="xs" className={cn(!s && "opacity-40")} /></span>
+                    <th key={h.id} className={cn("sortable", numCols.has(c) && "n", s && "on", c === sticky && "sticky")} aria-sort={s ? (s === "asc" ? "ascending" : "descending") : "none"}>
+                      <button type="button" className="th-inner" onClick={h.column.getToggleSortingHandler()}>
+                        {flexRender(h.column.columnDef.header, h.getContext())}<Icon of={s === "asc" ? ArrowUp : s === "desc" ? ArrowDown : ChevronsUpDown} size="xs" className={cn(!s && "opacity-40")} />
+                      </button>
                     </th>
                   );
                 })}

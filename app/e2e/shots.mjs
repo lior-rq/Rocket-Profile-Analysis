@@ -1,5 +1,6 @@
-/* Screenshot matrix. node e2e/shots.mjs <outdir> [--theme dark|light] [--width 1440]
-   [--reduced] [--routes a,b,c] [--port 8799] [--hover] [--drawer] [--delay 60] [--scroll 900] */
+/* Screenshot matrix.
+   node e2e/shots.mjs <outdir> [--theme dark|light] [--width 1440] [--reduced]
+   [--routes a,b,c] [--port 8799] [--hover] [--drawer] [--delay 60] [--scroll 900] */
 import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 

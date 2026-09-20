@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { useLive, useSubStart } from "@/store/live";
 import { useUi } from "@/store/ui";
 import { cancelRun } from "./common";
-import { Badge, Bar, Button, Check, ConfirmDialog, Icon, IconButton, LiveDot, Mark, RM, Tip, spring, stagger, type Tone } from "./ui";
+import { Badge, Bar, Button, Check, ConfirmDialog, Icon, IconButton, LiveDot, Mark, RM, Tip, spring, stagger, statusRing, type Tone } from "./ui";
 
 /* ------------------------------------------------------------ topbar */
 
@@ -36,7 +36,7 @@ export function Topbar() {
     <motion.header initial={RM ? false : { y: -24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={spring}
       className="glass-bar topbar sticky top-3 z-[var(--z-bar)] mx-4 mt-3 px-4 h-[var(--bar-h)] flex items-center gap-3">
       <Link to="/" className="flex items-center gap-3 min-w-0 hover:no-underline text-ink">
-        <motion.span animate={RM ? undefined : { rotate: [0, 2, -2, 0] }} transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }} className="inline-flex"><Mark size={36} /></motion.span>
+        <span className="inline-flex"><Mark size={36} /></span>
         <span className="leading-tight min-w-0 hidden sm:block">
           <span className="block font-semibold text-[14px] tracking-tight truncate">Rocket Profile Analysis</span>
           <span className="block text-[11px] text-ink-3 truncate">two-stage flight profile · OpenRocket + RASAero II</span>
@@ -116,8 +116,6 @@ export function ProgressStrip() {
 
 /* ----------------------------------------------------------- stepper */
 
-const RING: Record<string, string> = { ok: "done", partial: "warn", warn: "warn", stale: "warn", error: "bad", running: "run", todo: "", unchecked: "" };
-
 export function Stepper() {
   const state = useAppState();
   const path = useRouterState({ select: (s) => s.location.pathname });
@@ -127,7 +125,7 @@ export function Stepper() {
     ...STEPS.map((st) => {
       const s = stepStatus(state, st.id);
       return { key: st.id, to: st.path, label: st.title, active: path.startsWith(st.path), status: s, sub: s === "running" ? "running" : STATUS_TEXT[s] || s,
-        ring: s === "running" ? <LiveDot tone="info" /> : <span className={cn("step-ring", path.startsWith(st.path) && "active", RING[s])}>{s === "ok" ? <CheckMark /> : st.n}</span> };
+        ring: s === "running" ? <LiveDot tone="info" /> : <span className={cn("step-ring", path.startsWith(st.path) && "active", statusRing(s))}>{s === "ok" ? <CheckMark /> : st.n}</span> };
     }),
   ];
   return (
@@ -178,14 +176,26 @@ export function ActivityDrawer() {
   const errorsOnly = useUi((s) => s.errorsOnly), setErrorsOnly = useUi((s) => s.setErrorsOnly);
   const clearLog = useLive((s) => s.clearLog);
   const pct = r?.progress?.total ? r.progress.done / r.progress.total : undefined;
+  // The drag in flight: ended when the handle goes away, not just on pointerup.
+  const endDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => endDrag.current?.(), [open]);
   const drag = (ev: React.PointerEvent<HTMLDivElement>) => {
     ev.preventDefault();
+    endDrag.current?.();
     const el = ev.currentTarget; el.setPointerCapture(ev.pointerId);
     document.body.classList.add("dragging");
     const y0 = ev.clientY, h0 = height;
     const move = (e: PointerEvent) => setHeight(Math.max(80, Math.min(window.innerHeight * 0.8, h0 + (y0 - e.clientY))));
-    const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); document.body.classList.remove("dragging"); };
-    el.addEventListener("pointermove", move); el.addEventListener("pointerup", up);
+    const ends = ["pointerup", "pointercancel", "lostpointercapture"] as const;
+    const end = () => {
+      el.removeEventListener("pointermove", move);
+      for (const t of ends) el.removeEventListener(t, end);
+      document.body.classList.remove("dragging");
+      endDrag.current = null;
+    };
+    endDrag.current = end;
+    el.addEventListener("pointermove", move);
+    for (const t of ends) el.addEventListener(t, end);
   };
   const copy = () => {
     const lines = useLive.getState().lines;
@@ -245,22 +255,24 @@ export function Shell() {
     if (import.meta.env.DEV) { const y = Number(new URLSearchParams(location.search).get("scroll")); if (y) setTimeout(() => window.scrollTo(0, y), 1800); }
   }, [path]);
   return (
-    <div className="min-h-full flex flex-col">
+    <div className="min-h-full flex flex-col relative isolate">
       <div className="backdrop" aria-hidden="true" />
-      <Topbar />
-      <ProgressStrip />
-      <Stepper />
-      <main className="flex-1 mx-4 mt-4 min-w-0">
-        {stopped ? <Notice title="Stopped">The Rocket Profile Analysis service has been shut down. Relaunch the app to come back.</Notice>
-          : !state && stateError ? <Notice title="Connecting…">The service is not answering yet ({stateError}). It starts with the app; if this persists, open Runs &amp; logs after a restart.</Notice>
-          : !state ? <Notice title="Connecting…">Reading the project.</Notice>
-          : (
-            <motion.div key={path} variants={stagger} initial="hidden" animate="show" className="flex flex-col gap-4">
-              <Outlet />
-            </motion.div>
-          )}
-      </main>
-      <ActivityDrawer />
+      <div className="relative z-[1] flex-1 flex flex-col min-w-0">
+        <Topbar />
+        <ProgressStrip />
+        <Stepper />
+        <main className="flex-1 mx-4 mt-4 min-w-0">
+          {stopped ? <Notice title="Stopped">The Rocket Profile Analysis service has been shut down. Relaunch the app to come back.</Notice>
+            : !state && stateError ? <Notice title="Connecting…">The service is not answering yet ({stateError}). It starts with the app; if this persists, open Runs &amp; logs after a restart.</Notice>
+            : !state ? <Notice title="Connecting…">Reading the project.</Notice>
+            : (
+              <motion.div key={path} variants={stagger} initial="hidden" animate="show" className="flex flex-col gap-4">
+                <Outlet />
+              </motion.div>
+            )}
+        </main>
+        <ActivityDrawer />
+      </div>
     </div>
   );
 }

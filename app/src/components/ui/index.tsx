@@ -35,28 +35,27 @@ interface CardProps extends CardRest {
   /** Hosts a scrolling table or scrubber: no lift on hover. */
   static?: boolean;
   tight?: boolean;
-  /** Skip the entrance variant (cards inside AnimatePresence bring their own). */
+  /** Skip the entrance variant: cards in AnimatePresence bring their own. */
   plain?: boolean;
 }
 
 /** The pointer spotlight writes CSS variables straight to the node,
-    throttled to one frame, never through React state. */
+    throttled to one frame, never through React state. The layout read
+    happens inside the frame too, so it is at most one per frame. */
 function useSpotlight() {
   const ref = useRef<HTMLElement | null>(null);
   const raf = useRef<number | null>(null);
   const pos = useRef({ x: 0, y: 0 });
   const onPointerMove = (e: React.PointerEvent<HTMLElement>) => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    pos.current = { x: ((e.clientX - r.left) / r.width) * 100, y: ((e.clientY - r.top) / r.height) * 100 };
+    pos.current = { x: e.clientX, y: e.clientY };
     if (raf.current != null) return;
     raf.current = requestAnimationFrame(() => {
       raf.current = null;
       const node = ref.current;
       if (!node) return;
-      node.style.setProperty("--mx", pos.current.x.toFixed(1) + "%");
-      node.style.setProperty("--my", pos.current.y.toFixed(1) + "%");
+      const r = node.getBoundingClientRect();
+      node.style.setProperty("--mx", (((pos.current.x - r.left) / r.width) * 100).toFixed(1) + "%");
+      node.style.setProperty("--my", (((pos.current.y - r.top) / r.height) * 100).toFixed(1) + "%");
     });
   };
   useEffect(() => () => { if (raf.current != null) cancelAnimationFrame(raf.current); }, []);
@@ -70,7 +69,6 @@ export function Card({ title, sub, actions, children, className, bodyClassName, 
       id={id}
       ref={spot.ref as React.Ref<HTMLElement>}
       variants={plain ? undefined : rise}
-      layout="position"
       onPointerMove={isStatic ? undefined : spot.onPointerMove}
       className={cn("glass card", tight && "tight", isStatic && "static", busy && "busy", glow && glow !== "muted" && `ring-${glow}`, className)}
       {...(rest as object)}
@@ -122,7 +120,11 @@ export interface ButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonE
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({ className, variant, size, asChild, on, tone, type = "button", children, ...rest }, ref) => {
   const v = variant ?? "ghost";
   const cls = cn(buttonVariants({ variant, size }), on && "on", tone && v === "chip" && `tone-${tone}`, on && v === "icon" && "on", className);
-  if (asChild) return <Slot className={cls} ref={ref} {...(rest as object)}>{children}</Slot>;
+  if (asChild) {
+    // A non-button child has no disabled state: say it with aria and looks.
+    const { disabled, ...slotRest } = rest;
+    return <Slot className={cn(cls, disabled && "opacity-40 shadow-none cursor-not-allowed")} ref={ref} aria-disabled={disabled || undefined} data-disabled={disabled ? "" : undefined} {...(slotRest as object)}>{children}</Slot>;
+  }
   const still = rest.disabled || v === "link";
   return (
     <motion.button
@@ -206,7 +208,7 @@ export function NumberField({ value, onChange, step = 1, min, max, placeholder, 
   const editing = useRef(false);
   useEffect(() => { if (!editing.current) setText(show(value)); }, [value]);
   const clamp = (n: number) => Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n));
-  const digits = Math.max(0, -Math.floor(Math.log10(step)));
+  const decimals = (n: number) => { const m = /\.(\d+)/.exec(String(n)); return m ? m[1].length : 0; };
   return (
     <Input type="text" inputMode="decimal" sm={sm} edited={edited} className={cn(align === "right" && "text-right", className)} value={text} placeholder={placeholder} disabled={disabled} spellCheck={false}
       onFocus={() => { editing.current = true; }}
@@ -220,8 +222,10 @@ export function NumberField({ value, onChange, step = 1, min, max, placeholder, 
         if (e.key === "Enter") { (e.target as HTMLInputElement).blur(); onEnter?.(); }
         if (e.key === "ArrowUp" || e.key === "ArrowDown") {
           e.preventDefault();
-          const cur = Number(text) || value || 0;
-          const n = +clamp(cur + (e.key === "ArrowUp" ? step : -step)).toFixed(digits);
+          const typed = text.trim() === "" ? NaN : Number(text);
+          const cur = Number.isFinite(typed) ? typed : value ?? 0;
+          // Round to the finer of step and value: a step never truncates.
+          const n = +clamp(cur + (e.key === "ArrowUp" ? step : -step)).toFixed(Math.min(20, Math.max(decimals(step), decimals(cur))));
           setText(String(n)); onChange(n);
         }
       }} />
@@ -301,6 +305,10 @@ const STATUS_TONE: Record<string, Tone> = {
   todo: "muted", unchecked: "muted",
 };
 export const statusTone = (status: string): Tone => STATUS_TONE[status] || "muted";
+
+/** The .step-ring modifier for a step status. */
+const STATUS_RING: Record<string, string> = { ok: "done", partial: "warn", warn: "warn", stale: "warn", error: "bad", running: "run" };
+export const statusRing = (status: string): string => STATUS_RING[status] || "";
 
 export function Badge({ status, children, className, title, lower }: { status: string; children?: ReactNode; className?: string; title?: string; lower?: boolean }) {
   return <Pill tone={statusTone(status)} className={className} title={title} lower={lower}>{children ?? STATUS_TEXT[status] ?? status}</Pill>;

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rocket-profile-analysis"
-version = "1.1b1"
+version = "1.1b2"
 description = "Two-stage flight profile optimizer on OpenRocket + RASAero II, with a local GUI"
 requires-python = ">=3.11"
 dependencies = ["jpype1>=1.5", "numpy>=1.26", "pandas>=2.2", "matplotlib>=3.8", "pyyaml>=6", "tabulate>=0.9", "fastapi>=0.115", "uvicorn>=0.30"]

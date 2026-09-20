@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { useLive, useSubStart } from "@/store/live";
 import { useUi } from "@/store/ui";
 import { cancelRun } from "./common";
-import { Badge, Bar, Button, Check, ConfirmDialog, Icon, IconButton, LiveDot, Mark, Tip, spring, stagger, type Tone } from "./ui";
+import { Badge, Bar, Button, Check, ConfirmDialog, Icon, IconButton, LiveDot, Mark, RM, Tip, spring, stagger, type Tone } from "./ui";
 
 /* ------------------------------------------------------------ topbar */
 
@@ -33,10 +33,10 @@ export function Topbar() {
   const ThemeIcon = theme === "auto" ? SunMoon : theme === "light" ? Sun : Moon;
   const project = state?.root ? state.root.split(/[\\/]/).slice(-1)[0] : null;
   return (
-    <motion.header initial={{ y: -24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={spring}
+    <motion.header initial={RM ? false : { y: -24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={spring}
       className="glass-bar topbar sticky top-3 z-[var(--z-bar)] mx-4 mt-3 px-4 h-[var(--bar-h)] flex items-center gap-3">
       <Link to="/" className="flex items-center gap-3 min-w-0 hover:no-underline text-ink">
-        <motion.span animate={{ rotate: [0, 2, -2, 0] }} transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }} className="inline-flex"><Mark size={36} /></motion.span>
+        <motion.span animate={RM ? undefined : { rotate: [0, 2, -2, 0] }} transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }} className="inline-flex"><Mark size={36} /></motion.span>
         <span className="leading-tight min-w-0 hidden sm:block">
           <span className="block font-semibold text-[14px] tracking-tight truncate">Rocket Profile Analysis</span>
           <span className="block text-[11px] text-ink-3 truncate">two-stage flight profile · OpenRocket + RASAero II</span>
@@ -192,7 +192,7 @@ export function ActivityDrawer() {
     navigator.clipboard.writeText(lines.map((l) => `${clock(l.t)}  ${l.text}`).join("\n")).then(() => toast("log copied"), () => toast.error("copy failed"));
   };
   return (
-    <motion.section initial={{ y: 24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={spring}
+    <motion.section initial={RM ? false : { y: 24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={spring}
       className="glass-bar drawer sticky bottom-3 z-[var(--z-drawer)] mx-4 mb-3 mt-4" aria-label="Activity">
       {open && <div className="drag-handle mx-4 mt-1" onPointerDown={drag} title="drag to resize the log" />}
       <div className="flex flex-wrap items-center gap-2 px-3 min-h-[var(--drawer-h)] text-[12px]">
@@ -226,7 +226,7 @@ export function ActivityDrawer() {
 function Notice({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="glass card static max-w-[560px] mx-auto mt-16 items-center text-center !py-10">
-      <motion.span animate={{ opacity: [0.5, 1, 0.5] }} transition={{ duration: 1.6, repeat: Infinity }} className="inline-flex"><Mark size={44} /></motion.span>
+      <motion.span animate={RM ? undefined : { opacity: [0.5, 1, 0.5] }} transition={{ duration: 1.6, repeat: Infinity }} className="inline-flex"><Mark size={44} /></motion.span>
       <h2 className="text-[18px] font-semibold mt-2">{title}</h2>
       <p className="text-ink-2 text-[13.5px] leading-relaxed">{children}</p>
     </div>
@@ -239,7 +239,11 @@ export function Shell() {
   const stateError = useStateError();
   const stopped = useUi((s) => s.stopped);
   const path = useRouterState({ select: (s) => s.location.pathname });
-  useEffect(() => { window.scrollTo(0, 0); }, [path]);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+    // Dev only: ?scroll=<px> lets a screenshot of a WebView land mid-page.
+    if (import.meta.env.DEV) { const y = Number(new URLSearchParams(location.search).get("scroll")); if (y) setTimeout(() => window.scrollTo(0, y), 1800); }
+  }, [path]);
   return (
     <div className="min-h-full flex flex-col">
       <div className="backdrop" aria-hidden="true" />

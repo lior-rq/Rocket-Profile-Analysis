@@ -11,7 +11,7 @@ import { useAppState, useBusy, useRunner } from "@/lib/store";
 import { FINDINGS_STAGES, LIGHT_STAGES, STEPS, outcomeText, stepStatus, type FileInfo, type RunRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useUi } from "@/store/ui";
-import { Badge, Button, Card, ConfirmDialog, Dot, Icon, KV, LiveDot, Pill, Problem, cx } from "./ui";
+import { Badge, Button, Card, ConfirmDialog, Dot, Icon, KV, LiveDot, Pill, Problem, RM, cx } from "./ui";
 
 export { KV, Problem };
 
@@ -22,10 +22,10 @@ export function StepHead({ title, sub, kicker, children, className }: { title: R
     <header className={cn("flex items-end justify-between gap-4 flex-wrap", className)}>
       <div className="min-w-0">
         {kicker && <div className="micro mb-1">{kicker}</div>}
-        <motion.h1 initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className="text-[26px] font-semibold tracking-tight flex items-center gap-3 flex-wrap">
+        <motion.h1 initial={RM ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className="text-[26px] font-semibold tracking-tight flex items-center gap-3 flex-wrap">
           {title}
         </motion.h1>
-        {sub && <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.12 }} className="text-ink-2 text-[13.5px] mt-1 max-w-[900px] leading-relaxed">{sub}</motion.p>}
+        {sub && <motion.p initial={RM ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.12 }} className="text-ink-2 text-[13.5px] mt-1 max-w-[900px] leading-relaxed">{sub}</motion.p>}
       </div>
       {children && <div className="flex items-center gap-2 flex-wrap shrink-0">{children}</div>}
     </header>

@@ -11,7 +11,7 @@ import { createContext, useContext, useEffect, useId, useRef, useState, type Rea
 import { STATUS_TEXT } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Icon } from "./icon";
-import { reducedMotion, rise, snappy, soft, spring } from "./motion";
+import { RM, reducedMotion, rise, snappy, soft, spring } from "./motion";
 
 export { Icon, Mark } from "./icon";
 export * from "./motion";
@@ -368,7 +368,7 @@ export function Bar({ fraction, tone, className, height = 7, indeterminate }:
   return (
     <div className={cn("track", indeterminate && "indeterminate", className)} style={{ height }} role="progressbar" aria-valuenow={indeterminate ? undefined : Math.round(pct)}>
       {indeterminate ? <div className={cn("fill", tone && tone !== "accent" && tone)} />
-        : <motion.div className={cn("fill", tone && tone !== "accent" && tone)} initial={false} animate={{ width: pct + "%" }} transition={{ type: "spring", stiffness: 120, damping: 24 }} />}
+        : <motion.div className={cn("fill", tone && tone !== "accent" && tone)} initial={false} animate={{ width: pct + "%" }} transition={RM ? { duration: 0 } : { type: "spring", stiffness: 120, damping: 24 }} />}
     </div>
   );
 }
@@ -378,8 +378,8 @@ export function LiveDot({ tone = "accent", className }: { tone?: "accent" | "goo
   const color = `var(--${tone})`;
   return (
     <span className={cn("relative inline-flex w-2.5 h-2.5 shrink-0", className)}>
-      <motion.span className="absolute inset-0 rounded-full" style={{ background: color }}
-        animate={{ scale: [1, 2.2], opacity: [0.6, 0] }} transition={{ duration: 1.6, repeat: Infinity, ease: "easeOut" }} />
+      {!RM && <motion.span className="absolute inset-0 rounded-full" style={{ background: color }}
+        animate={{ scale: [1, 2.2], opacity: [0.6, 0] }} transition={{ duration: 1.6, repeat: Infinity, ease: "easeOut" }} />}
       <span className="relative rounded-full w-2.5 h-2.5" style={{ background: color }} />
     </span>
   );
